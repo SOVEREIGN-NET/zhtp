@@ -25,7 +25,7 @@ use lib_identity::{
 // Blockchain imports for transaction creation
 use lib_blockchain::{
     Transaction, 
-    transaction::IdentityTransactionData,
+    transaction::core::IdentityTransactionData,
     integration::crypto_integration::{Signature, PublicKey, SignatureAlgorithm},
     Hash,
 };

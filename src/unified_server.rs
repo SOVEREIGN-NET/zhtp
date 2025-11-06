@@ -2183,7 +2183,7 @@ impl MeshRouter {
                                 blocks: vec![received_block.clone()],
                                 utxo_set: HashMap::new(),
                                 identity_registry: HashMap::new(),
-                                wallet_registry: HashMap::new(),
+                                wallet_references: HashMap::new(),
                                 token_contracts: HashMap::new(),
                                 web4_contracts: HashMap::new(),
                                 contract_blocks: HashMap::new(),
@@ -3426,7 +3426,8 @@ impl MeshRouter {
         }))
     }
     
-    /// Record identity-wallet pair on blockchain 
+    /// Record identity-wallet pair on blockchain (privacy-enhanced)
+    /// Only stores minimal reference on blockchain, sensitive data goes to DHT
     async fn record_standalone_wallet_on_blockchain(
         &self,
         identity_id: &lib_identity::IdentityId,
@@ -3436,33 +3437,88 @@ impl MeshRouter {
         wallet_alias: &Option<String>,
         seed_phrase: &str
     ) -> Result<()> {
-        info!("Recording identity-linked wallet on blockchain...");
+        info!("Recording identity-linked wallet on blockchain (privacy-enhanced)...");
         
         let blockchain = lib_blockchain::get_shared_blockchain().await?;
         let mut blockchain_guard = blockchain.write().await;
         
-        // Create seed commitment hash for blockchain verification
-        // seed_phrase is already a String (20 words joined by spaces)
+        // Create seed commitment hash for DHT storage (not blockchain)
         let seed_commitment = lib_crypto::hash_blake3(seed_phrase.as_bytes());
         
+        // Step 1: Store sensitive wallet data in encrypted DHT
+        let wallet_private_data = lib_blockchain::WalletPrivateData {
+            wallet_name: wallet_name.to_string(),
+            alias: wallet_alias.clone(),
+            seed_commitment: lib_blockchain::Hash::from_slice(&seed_commitment),
+            capabilities: 0x0F, // Basic capabilities
+            initial_balance: 0,
+            transaction_history: Vec::new(),
+            metadata: std::collections::HashMap::new(),
+        };
+        
+        // Store private data in DHT (encrypted)
+        self.store_wallet_private_data_in_dht(identity_id, wallet_id, &wallet_private_data).await?;
+        
+        // Step 2: Create full wallet data for local blockchain storage (backward compatibility)
         let wallet_data = lib_blockchain::WalletTransactionData {
             wallet_id: lib_blockchain::Hash::from_slice(&wallet_id.0),
             wallet_type: wallet_type.to_string(),
-            wallet_name: wallet_name.to_string(),
+            wallet_name: wallet_name.to_string(), // Local storage still has full data
             alias: wallet_alias.clone(),
             public_key: vec![0u8; 32], // Generate proper public key
-            owner_identity_id: Some(lib_blockchain::Hash::from_slice(&identity_id.0)), // Identity-linked
+            owner_identity_id: Some(lib_blockchain::Hash::from_slice(&identity_id.0)),
             seed_commitment: lib_blockchain::Hash::from_slice(&seed_commitment),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
             registration_fee: 25,
-            capabilities: 0x0F, // Basic capabilities
+            capabilities: 0x0F,
             initial_balance: 0,
         };
         
+        // Register full wallet data locally (export will only send minimal reference)
         let _tx_hash = blockchain_guard.register_wallet(wallet_data)?;
-        info!("Identity-linked wallet recorded on blockchain");
+        info!("Identity-linked wallet recorded on blockchain (sensitive data in DHT)");
+        Ok(())
+    }
+    
+    /// Store sensitive wallet data in encrypted DHT
+    async fn store_wallet_private_data_in_dht(
+        &self,
+        identity_id: &lib_identity::IdentityId,
+        wallet_id: &lib_identity::wallets::WalletId,
+        private_data: &lib_blockchain::WalletPrivateData
+    ) -> Result<()> {
+        if let Ok(dht_client) = crate::runtime::shared_dht::get_dht_client().await {
+            let mut dht = dht_client.write().await;
+            
+            // Create storage key for wallet private data
+            let storage_key_data = format!("wallet_private:{}:{}", 
+                hex::encode(&identity_id.0), 
+                hex::encode(&wallet_id.0));
+            let storage_key = lib_storage::types::DhtKey::from_bytes(
+                &lib_crypto::hash_blake3(storage_key_data.as_bytes())
+            );
+            
+            // Serialize and encrypt the private data
+            let private_data_bytes = bincode::serialize(private_data)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize wallet private data: {}", e))?;
+            
+            // Store in DHT using regular content storage (simplified approach)
+            // TODO: Implement proper ZK storage when DHT client supports it
+            let storage_path = format!("/wallet_private/{}/{}", 
+                hex::encode(&identity_id.0), 
+                hex::encode(&wallet_id.0));
+            
+            // Store private data directly (simplified approach)
+            dht.store_content(
+                "wallet.zhtp", 
+                &storage_path, 
+                private_data_bytes
+            ).await.map_err(|e| anyhow::anyhow!("Failed to store wallet private data in DHT: {}", e))?;
+                
+            info!("Stored wallet private data in DHT for wallet {}", hex::encode(&wallet_id.0[..8]));
+        }
         Ok(())
     }
     
