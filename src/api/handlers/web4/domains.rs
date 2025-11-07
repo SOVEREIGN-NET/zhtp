@@ -9,6 +9,7 @@ use lib_proofs::ZeroKnowledgeProof;
 use serde::{Deserialize, Serialize};
 use tracing::{info, error};
 use anyhow::anyhow;
+use base64::{Engine as _, engine::general_purpose};
 
 use super::Web4Handler;
 use crate::runtime::blockchain_provider::add_transaction;
@@ -113,7 +114,18 @@ impl Web4Handler {
         let current_time = chrono::Utc::now().timestamp() as u64;
         
         for (path, mapping) in simple_request.content_mappings {
-            let content_bytes = mapping.content.as_bytes().to_vec();
+            // Decode base64 content to raw bytes for DHT storage
+            let content_bytes = match general_purpose::STANDARD.decode(&mapping.content) {
+                Ok(decoded) => {
+                    info!("   Decoded base64 content for path: {}", path);
+                    decoded
+                }
+                Err(e) => {
+                    error!("   Failed to decode base64 content for path {}: {}", path, e);
+                    // Fallback to treating as literal string (for backward compatibility)
+                    mapping.content.as_bytes().to_vec()
+                }
+            };
             let content_hash = lib_crypto::hash_blake3(&content_bytes);
             let content_hash_hex = hex::encode(&content_hash[..8]); // Use first 8 bytes for shorter hash
             let content_hash_full = lib_crypto::Hash::from_bytes(&content_hash[..32]);
@@ -300,7 +312,18 @@ impl Web4Handler {
         // Decode initial content from base64
         let mut initial_content = std::collections::HashMap::new();
         for (path, encoded_content) in api_request.initial_content {
-            let content = encoded_content.as_bytes().to_vec(); // Simplified for now
+            // Decode base64 content to raw bytes for DHT storage
+            let content = match general_purpose::STANDARD.decode(&encoded_content) {
+                Ok(decoded) => {
+                    info!("Decoded base64 content for path: {}", path);
+                    decoded
+                }
+                Err(e) => {
+                    error!("Failed to decode base64 content for path {}: {}", path, e);
+                    // Fallback to treating as literal string (for backward compatibility)
+                    encoded_content.as_bytes().to_vec()
+                }
+            };
             initial_content.insert(path, content);
         }
 
