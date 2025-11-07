@@ -5482,15 +5482,11 @@ impl ZhtpUnifiedServer {
             "ACTIVE"
         };
         
-        // Initialize Bluetooth Classic for high-throughput mesh
-        let bluetooth_classic_status = if let Err(e) = self.bluetooth_classic_router.initialize().await {
-            warn!("❌ Bluetooth Classic: FAILED - {}", e);
-            warn!("   → Continuing without Bluetooth Classic support");
-            "FAILED"
-        } else {
-            info!("✅ Bluetooth Classic: ACTIVE (375 KB/s RFCOMM)");
-            info!("   → High-bandwidth device-to-device connections");
-            "ACTIVE"
+        // Skip Bluetooth Classic for now (focusing on BLE only)
+        let bluetooth_classic_status = {
+            info!("⏭️  Bluetooth Classic: SKIPPED (focusing on BLE implementation)");
+            info!("   → Will be enabled later for high-bandwidth transfers");
+            "DISABLED"
         };
         
         // Initialize WiFi Direct + mDNS

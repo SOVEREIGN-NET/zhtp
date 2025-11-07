@@ -106,7 +106,7 @@ tempfile = "3.8"
 criterion = "0.5"
 
 [features]
-default = ["production", "full-blockchain", "platform-bluetooth"]
+default = ["production", "full-blockchain", "windows-bluetooth"]  # Enable Windows Bluetooth by default
 production = []
 development = ["tracing-subscriber/env-filter"]
 pure-mesh = []  # Pure mesh mode without TCP/IP fallback
@@ -120,8 +120,8 @@ minimal-blockchain = []  # No blockchain validation, DHT storage only
 
 # Platform-specific Bluetooth features (automatically enabled on respective platforms)
 # Note: Windows WinRT APIs are now always available on Windows without feature flags
-platform-bluetooth = []  # Auto-enable Bluetooth for current platform
-windows-bluetooth = []  # Windows WinRT APIs automatically available on Windows
+platform-bluetooth = ["windows-bluetooth", "lib-network/windows-gatt"]  # Auto-enable Bluetooth for current platform
+windows-bluetooth = ["lib-network/windows-gatt"]  # Windows GATT Server with WinRT APIs
 linux-bluetooth = ["lib-network/enhanced-parsing"]  # Linux uses BlueZ via D-Bus
 macos-bluetooth = ["lib-network/macos-corebluetooth"]
 
