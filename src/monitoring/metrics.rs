@@ -454,7 +454,7 @@ impl MetricsCollector {
     /// Collect economic metrics using lib-economy
     async fn collect_economic_metrics(metrics: &mut SystemMetrics) -> Result<()> {
         // Try to collect economics data from the blockchain's economics transactions
-        if let Ok(blockchain_guard) = lib_blockchain::get_shared_blockchain().await {
+        if let Ok(blockchain_guard) = crate::runtime::blockchain_provider::get_global_blockchain().await {
             let blockchain = blockchain_guard.read().await;
             
             metrics.total_ubi_distributed = blockchain.economics_transactions.len() as u64 * 500; // Estimate UBI

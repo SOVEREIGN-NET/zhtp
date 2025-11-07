@@ -353,6 +353,34 @@ impl RuntimeOrchestrator {
         let mut user_wallet = self.user_wallet.write().await;
         *user_wallet = Some(wallet.clone());
         info!("User wallet stored in orchestrator for component initialization");
+        drop(user_wallet);
+        
+        // Initialize blockchain with genesis funding NOW, before starting BlockchainComponent
+        info!("📦 Creating blockchain with genesis funding for user wallet...");
+        let mut blockchain = lib_blockchain::Blockchain::new()?;
+        
+        // Create genesis validator from user wallet
+        let genesis_validator = crate::runtime::components::GenesisValidator {
+            identity_id: wallet.node_identity_id.clone(),
+            stake: 100_000, // Initial stake for user
+            storage_provided: 0,
+            commission_rate: 500, // 5% commission
+            endpoints: vec![],
+            consensus_key: None,
+        };
+        
+        // Fund the blockchain genesis with user wallet
+        crate::runtime::components::BlockchainComponent::create_genesis_funding(
+            &mut blockchain,
+            vec![genesis_validator],
+            &self.config.environment,
+        ).await?;
+        
+        let blockchain_arc = Arc::new(RwLock::new(blockchain));
+        
+        // Set in global provider BEFORE BlockchainComponent starts
+        set_global_blockchain(blockchain_arc.clone()).await?;
+        info!("✅ Global blockchain provider initialized with user wallet funding");
         
         // CRITICAL: Also push wallet to BlockchainComponent if already registered
         let components = self.components.read().await;
@@ -380,10 +408,19 @@ impl RuntimeOrchestrator {
 
     /// Start all components in the correct order
     pub async fn start_all_components(&self) -> Result<()> {
-        info!(" Starting all ZHTP components...");
+        info!("🚀 Starting all ZHTP components...");
         
         // Register components once if not already registered
         self.register_all_components().await?;
+        
+        // Initialize blockchain BEFORE starting components
+        info!("📦 Creating blockchain instance...");
+        let blockchain = lib_blockchain::Blockchain::new()?;
+        let blockchain_arc = Arc::new(RwLock::new(blockchain));
+        
+        // Set in global provider so BlockchainComponent can access it
+        set_global_blockchain(blockchain_arc.clone()).await?;
+        info!("✅ Global blockchain provider initialized");
         
         for component_id in &self.startup_order {
             self.start_component(component_id.clone()).await
@@ -393,7 +430,7 @@ impl RuntimeOrchestrator {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         
-        info!("All components started successfully");
+        info!("✅ All components started successfully");
         Ok(())
     }
 

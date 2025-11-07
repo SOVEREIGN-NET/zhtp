@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use lib_blockchain::{Blockchain, Transaction, Block, IdentityTransactionData, Hash};
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{info, error};
 
 /// Global blockchain provider for shared access across components
 /// This allows the protocols component to access the shared blockchain instance
@@ -86,9 +86,17 @@ pub async fn add_transaction(transaction: Transaction) -> Result<String> {
     
     // Add transaction to blockchain and mempool
     let transaction_hash = transaction.hash().to_string();
-    if let Err(e) = blockchain_lock.add_pending_transaction(transaction) {
-        warn!("Failed to add pending transaction: {}", e);
+    if let Err(e) = blockchain_lock.add_pending_transaction(transaction.clone()) {
+        error!("Failed to add pending transaction {}: {}", transaction_hash, e);
+        error!("Transaction details: inputs={}, outputs={}, fee={}, type={:?}", 
+            transaction.inputs.len(), 
+            transaction.outputs.len(), 
+            transaction.fee,
+            transaction.transaction_type);
+        return Err(anyhow::anyhow!("Failed to add transaction to mempool: {}", e));
     }
+    
+    info!("Transaction {} successfully added to mempool", transaction_hash);
     
     Ok(transaction_hash)
 }

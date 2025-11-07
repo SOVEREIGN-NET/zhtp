@@ -384,7 +384,7 @@ impl DashboardServer {
         };
         
         // Get blockchain data from lib-blockchain
-        let (block_height, transaction_count) = match lib_blockchain::get_shared_blockchain().await {
+        let (block_height, transaction_count) = match crate::runtime::blockchain_provider::get_global_blockchain().await {
             Ok(blockchain_guard) => {
                 let blockchain = blockchain_guard.read().await;
                 (blockchain.height, blockchain.pending_transactions.len() as u64 + blockchain.height * 10) // Estimate total txs

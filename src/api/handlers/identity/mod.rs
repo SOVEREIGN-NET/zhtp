@@ -419,10 +419,10 @@ impl IdentityHandler {
     async fn submit_transaction_to_blockchain(&self, transaction: Transaction) -> Result<String> {
         tracing::info!("📝 Getting shared blockchain instance for transaction submission...");
         
-        // Get the shared blockchain instance
-        match lib_blockchain::get_shared_blockchain().await {
+        // Get the global blockchain instance
+        match crate::runtime::blockchain_provider::get_global_blockchain().await {
             Ok(shared_blockchain) => {
-                tracing::info!("✅ Got shared blockchain, acquiring write lock...");
+                tracing::info!("✅ Got global blockchain, acquiring write lock...");
                 
                 // Add timeout to prevent infinite blocking
                 match tokio::time::timeout(

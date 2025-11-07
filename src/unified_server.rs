@@ -1938,7 +1938,7 @@ impl MeshRouter {
                     }
                     
                     // Export and send blockchain chunks directly via UDP to sender's address
-                    match lib_blockchain::get_shared_blockchain().await {
+                    match crate::runtime::blockchain_provider::get_global_blockchain().await {
                         Ok(blockchain_arc) => {
                             let blockchain_lock = blockchain_arc.read().await;
                             
@@ -2043,8 +2043,8 @@ impl MeshRouter {
                             info!(" All blockchain chunks received and verified! Total: {} bytes", complete_data.len());
                             info!("   Importing blockchain data...");
                             
-                            // Import the blockchain directly into the shared instance
-                            match lib_blockchain::get_shared_blockchain().await {
+                            // Import the blockchain directly into the global instance
+                            match crate::runtime::blockchain_provider::get_global_blockchain().await {
                                 Ok(blockchain_arc) => {
                                     let mut blockchain_lock = blockchain_arc.write().await;
                                     
@@ -2161,7 +2161,7 @@ impl MeshRouter {
                     }
                     
                     // Get blockchain and try to add block
-                    match lib_blockchain::get_shared_blockchain().await {
+                    match crate::runtime::blockchain_provider::get_global_blockchain().await {
                         Ok(blockchain_arc) => {
                             let blockchain = blockchain_arc.read().await;
                             
@@ -2366,7 +2366,7 @@ impl MeshRouter {
                     }
                     
                     // Add to mempool
-                    match lib_blockchain::get_shared_blockchain().await {
+                    match crate::runtime::blockchain_provider::get_global_blockchain().await {
                         Ok(blockchain_arc) => {
                             let mut blockchain = blockchain_arc.write().await;
                             
@@ -3439,7 +3439,7 @@ impl MeshRouter {
     ) -> Result<()> {
         info!("Recording identity-linked wallet on blockchain (privacy-enhanced)...");
         
-        let blockchain = lib_blockchain::get_shared_blockchain().await?;
+        let blockchain = crate::runtime::blockchain_provider::get_global_blockchain().await?;
         let mut blockchain_guard = blockchain.write().await;
         
         // Create seed commitment hash for DHT storage (not blockchain)
@@ -3567,9 +3567,9 @@ impl MeshRouter {
     async fn record_identity_on_blockchain(&self, identity_result: &serde_json::Value) -> Result<()> {
         info!("🔗 Starting blockchain registration...");
         
-        // Get shared blockchain instance
-        info!("🔗 Getting shared blockchain instance...");
-        let blockchain = lib_blockchain::get_shared_blockchain().await?;
+        // Get global blockchain instance
+        info!("🔗 Getting global blockchain instance...");
+        let blockchain = crate::runtime::blockchain_provider::get_global_blockchain().await?;
         info!("🔗 Acquiring blockchain write lock...");
         let mut blockchain_guard = blockchain.write().await;
         info!("🔗 Blockchain lock acquired successfully");

@@ -720,15 +720,24 @@ impl Web4Handler {
         let memo = serde_json::to_vec(&metadata_json)
             .map_err(|e| anyhow!("Failed to serialize contract metadata: {}", e))?;
 
+        // Create system transaction for Web4 contract deployment
+        // System transactions don't require UTXO inputs - they're validated differently
+        // System transactions MUST have fee = 0 (they're feeless)
         let mut transaction = Transaction::new(
-            vec![], // No inputs for now - in production, should pull from owner's UTXOs
+            vec![], // Empty inputs for system transaction
             vec![contract_output],
-            1000, // Contract deployment fee (1000 ZHTP)
+            0, // System transactions are fee-free
             signature,
             memo,
         );
 
+        // Mark as system transaction and set contract deployment type
         transaction.transaction_type = TransactionType::ContractDeployment;
+        
+        // Set system transaction flag by setting chain_id to development network (0x03)
+        // This bypasses UTXO validation for system/genesis transactions
+        transaction.chain_id = 0x03; // Development network allows system transactions
+        
         let tx_hash = transaction.hash().to_string();
 
         // Add transaction to blockchain

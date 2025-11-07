@@ -1004,7 +1004,7 @@ impl BlockchainComponent {
     }
 
     // Create genesis funding to bootstrap the system with UTXOs for multi-node network
-    async fn create_genesis_funding(
+    pub async fn create_genesis_funding(
         blockchain: &mut Blockchain,
         genesis_validators: Vec<GenesisValidator>,
         environment: &crate::config::Environment,
@@ -1209,10 +1209,10 @@ impl Component for BlockchainComponent {
         
         *self.status.write().await = ComponentStatus::Starting;
         
-        // Try to get existing shared blockchain first
-        match lib_blockchain::get_shared_blockchain().await {
+        // Try to get existing global blockchain first
+        match crate::runtime::blockchain_provider::get_global_blockchain().await {
             Ok(shared_blockchain) => {
-                info!("Using existing shared blockchain instance");
+                info!("Using existing global blockchain instance");
                 let blockchain_clone = {
                     let blockchain_guard = shared_blockchain.read().await;
                     blockchain_guard.clone()
@@ -1220,64 +1220,14 @@ impl Component for BlockchainComponent {
                 *self.blockchain.write().await = Some(blockchain_clone);
             }
             Err(_) => {
-                // If no shared blockchain exists, check if we should create genesis or join existing network
+                // If no global blockchain exists, check if we should create genesis or join existing network
                 if self.joined_existing_network {
                     info!("✅ Joining existing network - skipping genesis creation");
                     info!("   Blockchain will sync from network peers after API server starts");
-                    // Initialize empty blockchain, will sync from peers via ProtocolsComponent
-                    let shared_blockchain = lib_blockchain::initialize_shared_blockchain();
-                    let blockchain_for_component = {
-                        let blockchain_guard = shared_blockchain.read().await;
-                        blockchain_guard.clone()
-                    };
-                    *self.blockchain.write().await = Some(blockchain_for_component);
+                    // Will be initialized by RuntimeOrchestrator with proper configuration
                 } else {
-                    // No shared blockchain exists AND we're not joining existing - initialize genesis
-                    info!("Initializing new shared blockchain instance for {} network...", self.environment);
-                    
-                    // Initialize shared blockchain (GenesisConfig is handled internally)
-                    let shared_blockchain = lib_blockchain::initialize_shared_blockchain();
-                    
-                    // Create genesis funding to bootstrap the system with UTXOs
-                    {
-                        let mut blockchain_guard = shared_blockchain.write().await;
-                        let bootstrap_validators_guard = self.bootstrap_validators.read().await;
-                        
-                        // Convert BootstrapValidator to GenesisValidator
-                        let genesis_validators: Vec<GenesisValidator> = bootstrap_validators_guard
-                            .iter()
-                            .cloned()
-                            .map(GenesisValidator::from)
-                            .collect();
-                        
-                        // If no bootstrap validators configured, create single validator from user wallet for dev mode
-                        let genesis_validators = if genesis_validators.is_empty() {
-                            let user_wallet_guard = self.user_wallet.read().await;
-                            if let Some(wallet_data) = user_wallet_guard.as_ref() {
-                                vec![GenesisValidator {
-                                    identity_id: wallet_data.node_identity_id.clone(),
-                                    stake: 100_000, // Default dev stake
-                                    storage_provided: 1000, // Default dev storage (1TB)  
-                                    commission_rate: 500, // 5% commission
-                                    endpoints: vec!["127.0.0.1:8080".to_string()],
-                                    consensus_key: None,
-                                }]
-                            } else {
-                                return Err(anyhow::anyhow!("No validators configured and no user wallet available"));
-                            }
-                        } else {
-                            genesis_validators
-                        };
-                        
-                        Self::create_genesis_funding(&mut *blockchain_guard, genesis_validators, &self.environment).await?;
-                    }
-                    
-                    // Get the blockchain from shared instance
-                    let blockchain_for_component = {
-                        let blockchain_guard = shared_blockchain.read().await;
-                        blockchain_guard.clone()
-                    };
-                    *self.blockchain.write().await = Some(blockchain_for_component);
+                    // No global blockchain exists AND we're not joining existing - will be initialized by RuntimeOrchestrator
+                    info!("Blockchain will be initialized by RuntimeOrchestrator for {} network...", self.environment);
                 }
             }
         }
@@ -1807,8 +1757,8 @@ impl BlockchainComponent {
             interval.tick().await;
             debug!("✅ Mining loop tick #{} completed, fetching blockchain...", block_counter);
             
-            // Use shared blockchain provider to get the current blockchain state
-            match lib_blockchain::get_shared_blockchain().await {
+            // Use global blockchain provider to get the current blockchain state (same instance as API uses)
+            match crate::runtime::blockchain_provider::get_global_blockchain().await {
                 Ok(shared_blockchain) => {
                     let blockchain_guard = shared_blockchain.read().await;
                     let pending_count = blockchain_guard.pending_transactions.len();
@@ -2395,23 +2345,19 @@ impl Component for ProtocolsComponent {
                     synced_blockchain.identity_registry.len()
                 );
                 
-                // Update or initialize the shared blockchain instance with synced state
-                let shared_blockchain = match lib_blockchain::get_shared_blockchain().await {
+                // Update or initialize the global blockchain instance with synced state
+                let shared_blockchain = match crate::runtime::blockchain_provider::get_global_blockchain().await {
                     Ok(shared) => {
                         let mut blockchain_guard = shared.write().await;
                         *blockchain_guard = synced_blockchain.clone();
-                        info!("📡 Updated shared blockchain instance with synced state");
+                        info!("📡 Updated global blockchain instance with synced state");
                         drop(blockchain_guard);
                         shared
                     }
-                    Err(_) => {
-                        // If no shared blockchain exists, initialize it with synced state
-                        let shared = lib_blockchain::initialize_shared_blockchain();
-                        let mut blockchain_guard = shared.write().await;
-                        *blockchain_guard = synced_blockchain.clone();
-                        info!("📡 Initialized shared blockchain with synced state");
-                        drop(blockchain_guard);
-                        shared
+                    Err(e) => {
+                        // If no global blockchain exists, that's a critical error
+                        // BlockchainComponent must be started before ProtocolsComponent
+                        panic!("Global blockchain not initialized before protocols component sync. This is a startup ordering error: {}", e);
                     }
                 };
                 
@@ -2421,22 +2367,22 @@ impl Component for ProtocolsComponent {
             Err(e) => {
                 info!("ℹ️  Could not bootstrap from peers ({}), checking for shared blockchain", e);
                 // ProtocolsComponent should NOT create genesis - that's BlockchainComponent's job!
-                // Wait for BlockchainComponent to initialize the shared blockchain with proper genesis funding
-                match lib_blockchain::get_shared_blockchain().await {
+                // Wait for BlockchainComponent to initialize the global blockchain with proper genesis funding
+                match crate::runtime::blockchain_provider::get_global_blockchain().await {
                     Ok(shared_blockchain) => {
-                        info!("📡 Using existing shared blockchain instance from BlockchainComponent");
+                        info!("📡 Using existing global blockchain instance from BlockchainComponent");
                         shared_blockchain
                     }
                     Err(_) => {
                         // BlockchainComponent hasn't started yet - wait for it with timeout
-                        info!("⏳ Waiting for BlockchainComponent to initialize shared blockchain (up to 30 seconds)...");
+                        info!("⏳ Waiting for BlockchainComponent to initialize global blockchain (up to 30 seconds)...");
                         let mut attempts = 0;
                         loop {
                             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                             attempts += 1;
                             
-                            if let Ok(shared_blockchain) = lib_blockchain::get_shared_blockchain().await {
-                                info!("✅ Shared blockchain initialized by BlockchainComponent (waited {} ms)", attempts * 500);
+                            if let Ok(shared_blockchain) = crate::runtime::blockchain_provider::get_global_blockchain().await {
+                                info!("✅ Global blockchain initialized by BlockchainComponent (waited {} ms)", attempts * 500);
                                 break shared_blockchain;
                             }
                             
@@ -2610,8 +2556,8 @@ impl Component for ProtocolsComponent {
                         Ok(synced_blockchain) => {
                             info!("🔄 Periodic sync succeeded from peer {}", peer_addr);
                             
-                            // Update shared blockchain
-                            if let Ok(shared) = lib_blockchain::get_shared_blockchain().await {
+                            // Update global blockchain
+                            if let Ok(shared) = crate::runtime::blockchain_provider::get_global_blockchain().await {
                                 let mut shared_write = shared.write().await;
                                 *shared_write = synced_blockchain.clone();
                             }

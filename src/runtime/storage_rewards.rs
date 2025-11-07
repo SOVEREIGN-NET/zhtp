@@ -197,10 +197,10 @@ impl StorageRewardProcessor {
         // Validate transaction before submitting
         self.validate_reward_transaction(claim_amount, &reward_tx).await?;
         
-        // Add to blockchain using shared blockchain provider
-        let shared_blockchain = lib_blockchain::get_shared_blockchain()
+        // Add to blockchain using global blockchain provider
+        let shared_blockchain = crate::runtime::blockchain_provider::get_global_blockchain()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get shared blockchain: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to get global blockchain: {}", e))?;
         
         {
             let mut blockchain_write = shared_blockchain.write().await;
@@ -275,7 +275,7 @@ impl StorageRewardProcessor {
         info!("      ✓ Amount valid: {} ZHTP", claim_amount);
         
         // 2. Verify blockchain is available
-        let shared_blockchain = lib_blockchain::get_shared_blockchain()
+        let shared_blockchain = crate::runtime::blockchain_provider::get_global_blockchain()
             .await
             .map_err(|e| anyhow::anyhow!("Blockchain unavailable: {}", e))?;
         

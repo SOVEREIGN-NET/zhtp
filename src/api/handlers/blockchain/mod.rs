@@ -39,7 +39,7 @@ impl BlockchainHandler {
     /// Get the current shared blockchain instance
     /// This ensures we always see the latest state
     async fn get_blockchain(&self) -> anyhow::Result<Arc<RwLock<Blockchain>>> {
-        lib_blockchain::get_shared_blockchain().await
+        crate::runtime::blockchain_provider::get_global_blockchain().await
     }
 }
 
