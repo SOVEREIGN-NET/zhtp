@@ -2351,7 +2351,7 @@ impl Component for ProtocolsComponent {
         info!("Initializing backend components for unified server...");
         
         // 🔗 Try to bootstrap blockchain from existing network peers first
-        let blockchain = match try_bootstrap_blockchain(&Arc::new(RwLock::new(lib_blockchain::Blockchain::new()?)), &Arc::new(RwLock::new(lib_storage::UnifiedStorageSystem::new(create_default_storage_config()?).await?)), self.api_port).await {
+        let blockchain = match try_bootstrap_blockchain(&Arc::new(RwLock::new(lib_blockchain::Blockchain::new()?)), &Arc::new(RwLock::new(lib_storage::UnifiedStorageSystem::new(create_default_storage_config()?).await?)), self.api_port, &self.environment).await {
             Ok(synced_blockchain) => {
                 info!("✅ Successfully bootstrapped blockchain from network peers");
                 info!("   Height: {}, UTXOs: {}, Identities: {}", 
@@ -2800,6 +2800,7 @@ async fn try_bootstrap_blockchain(
     _blockchain: &Arc<RwLock<lib_blockchain::Blockchain>>,
     _storage: &Arc<RwLock<lib_storage::UnifiedStorageSystem>>,
     _api_port: u16,
+    environment: &crate::config::environment::Environment,
 ) -> Result<lib_blockchain::Blockchain> {
     use lib_network::dht::bootstrap::{DHTBootstrap, DHTBootstrapEnhancements};
     use tokio::time::{timeout, Duration};
@@ -2814,7 +2815,10 @@ async fn try_bootstrap_blockchain(
         max_mdns_peers: 10,
     };
     
-    let mut bootstrap = DHTBootstrap::new(enhancements);
+    // Load the node's persistent identity to get a real public key
+    let node_identity = crate::cli::commands::node::create_or_load_node_identity(environment).await?;
+    let local_public_key = lib_crypto::PublicKey::new(node_identity.public_key.clone());
+    let mut bootstrap = DHTBootstrap::new(enhancements, local_public_key);
     
     // Use enhance_bootstrap to discover peers
     let peers = bootstrap.enhance_bootstrap(&[]).await

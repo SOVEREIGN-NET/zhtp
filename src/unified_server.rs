@@ -4567,11 +4567,12 @@ impl BluetoothRouter {
         &self,
         mesh_connections: Arc<RwLock<HashMap<PublicKey, lib_network::mesh::connection::MeshConnection>>>,
         peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<PublicKey>>,
+        our_public_key: PublicKey,
     ) -> Result<()> {
         info!("Initializing Bluetooth mesh protocol for phone connectivity...");
         
         // Create Bluetooth mesh protocol instance
-        let mut bluetooth_protocol = BluetoothMeshProtocol::new(self.node_id)?;
+        let mut bluetooth_protocol = BluetoothMeshProtocol::new(self.node_id, our_public_key)?;
         
         // Create GATT message channel for forwarding GATT writes to this router
         let (gatt_tx, mut gatt_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4605,8 +4606,8 @@ impl BluetoothRouter {
                         if let Ok(handshake) = bincode::deserialize::<lib_network::discovery::local_network::MeshHandshake>(&data) {
                             info!("🤝 GATT handshake from: {}", handshake.node_id);
                             
-                            // Create peer identity
-                            let peer_pubkey = lib_crypto::PublicKey::new(handshake.node_id.as_bytes().to_vec());
+                            // Extract the real cryptographic public key from handshake
+                            let peer_pubkey = handshake.public_key.clone();
                             
                             // Create mesh connection for GATT peer
                             let connection = lib_network::mesh::connection::MeshConnection {
@@ -4640,15 +4641,14 @@ impl BluetoothRouter {
                             let device_info = format!("Bluetooth GATT (protocols: {:?})", handshake.protocols);
                             connected_devices.write().await.insert(device_key, device_info);
                             
-                            // If this is a new peer, request their blockchain via BLE
-                            // This enables testing of duplicate sync prevention when both BLE and UDP are connected
-                            if is_new_peer {
-                                info!("🔄 New BLE peer detected - notifying for blockchain sync");
-                                // Notify about new BLE peer so unified_server can trigger blockchain sync
-                                if let Some(notify_tx) = &ble_peer_notify {
-                                    if let Err(e) = notify_tx.send(peer_pubkey.clone()) {
-                                        warn!("Failed to send BLE peer notification: {}", e);
-                                    }
+                            // Always trigger blockchain sync for BLE handshake completion
+                            // The sync coordinator will detect and prevent duplicates if peer is also connected via UDP
+                            info!("🔄 BLE handshake complete - notifying for blockchain sync (is_new_peer: {})", is_new_peer);
+                            if let Some(notify_tx) = &ble_peer_notify {
+                                if let Err(e) = notify_tx.send(peer_pubkey.clone()) {
+                                    warn!("Failed to send BLE peer notification: {}", e);
+                                } else {
+                                    info!("📤 BLE peer notification sent for {}", handshake.node_id);
                                 }
                             }
                         }
@@ -5543,10 +5543,20 @@ impl ZhtpUnifiedServer {
         info!("  PEER DISCOVERY METHODS - STATUS REPORT");
         info!("═══════════════════════════════════════════════════════════════");
         
+        // Get our public key for discovery protocols
+        let our_public_key_for_discovery = match self.mesh_router.get_sender_public_key().await {
+            Ok(pk) => pk,
+            Err(e) => {
+                warn!("❌ Failed to get public key for discovery: {}", e);
+                return Ok(()); // Skip discovery initialization if we can't get public key
+            }
+        };
+        
         // Start local network peer discovery (multicast)
         let multicast_status = if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
             self.server_id,
-            self.port
+            self.port,
+            our_public_key_for_discovery.clone()
         ).await {
             warn!("❌ UDP Multicast: FAILED - {}", e);
             "FAILED"
@@ -5562,8 +5572,17 @@ impl ZhtpUnifiedServer {
         // Create BLE peer discovery notification channel for blockchain sync trigger
         let (ble_peer_tx, mut ble_peer_rx) = tokio::sync::mpsc::unbounded_channel::<PublicKey>();
         
+        // Get our public key for BLE handshakes
+        let our_public_key = match self.mesh_router.get_sender_public_key().await {
+            Ok(pk) => pk,
+            Err(e) => {
+                warn!("❌ Failed to get public key for BLE initialization: {}", e);
+                return Ok(()); // Skip BLE initialization if we can't get public key
+            }
+        };
+        
         // Initialize Bluetooth LE discovery (pass mesh_connections and peer notification channel for GATT handler)
-        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone(), Some(ble_peer_tx)).await {
+        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone(), Some(ble_peer_tx), our_public_key).await {
             warn!("❌ Bluetooth LE: FAILED - {}", e);
             warn!("   → Continuing without Bluetooth LE support");
             "FAILED"

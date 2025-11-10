@@ -639,7 +639,8 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     
     // Method 1: DHT Enhanced Bootstrap (includes mDNS)
     println!("   → Method 1: DHT bootstrap with mDNS discovery");
-    let mut dht_bootstrap = DHTBootstrap::new(Default::default());
+    let local_public_key = lib_crypto::PublicKey::new(node_identity.public_key.clone());
+    let mut dht_bootstrap = DHTBootstrap::new(Default::default(), local_public_key.clone());
     
     // Start with empty bootstrap list - will use mDNS to find local peers
     // INCREASED TIMEOUT: WiFi Direct/mDNS can take 8-10 seconds to discover peers
@@ -914,7 +915,7 @@ struct BlockchainInfo {
 
 /// Create or load persistent node identity that serves as both DHT address and wallet address
 /// This ensures the node has a consistent identity across all DHT operations
-async fn create_or_load_node_identity(environment: &Environment) -> Result<ZhtpIdentity> {
+pub async fn create_or_load_node_identity(environment: &Environment) -> Result<ZhtpIdentity> {
     use std::path::Path;
     use std::fs;
     use lib_crypto::generate_keypair;
