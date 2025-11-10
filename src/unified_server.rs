@@ -4610,7 +4610,7 @@ impl BluetoothRouter {
         
         // Store the protocol instance (wrapped in Arc for sharing)
         let protocol_arc = Arc::new(bluetooth_protocol);
-        *self.protocol.write().await = Some(protocol_arc);
+        *self.protocol.write().await = Some(protocol_arc.clone());
         
         // Spawn GATT message handler task with mesh_connections access
         let connected_devices = self.connected_devices.clone();
@@ -4618,6 +4618,7 @@ impl BluetoothRouter {
         let ble_peer_notify = peer_discovery_tx.clone();
         let sync_coordinator_for_gatt = sync_coordinator.clone();
         let mesh_router_for_gatt = mesh_router.clone();
+        let bluetooth_protocol_for_gatt = protocol_arc.clone(); // ✅ Clone protocol for GATT handler
         tokio::spawn(async move {
             while let Some(gatt_message) = gatt_rx.recv().await {
                 use lib_network::protocols::bluetooth::gatt::GattMessage;
@@ -4658,6 +4659,22 @@ impl BluetoothRouter {
                             let is_new_peer = !mesh_conns.read().await.contains_key(&peer_pubkey);
                             mesh_conns.write().await.insert(peer_pubkey.clone(), connection);
                             info!("   ✅ Added GATT peer {} to mesh network", handshake.node_id);
+                            
+                            // 🔧 FIX: Also register with BluetoothMeshProtocol.current_connections
+                            // This is required for send_mesh_message() to find the peer
+                            let gatt_address = format!("gatt://{}", handshake.node_id);
+                            let ble_connection = lib_network::protocols::bluetooth::BluetoothConnection {
+                                device_address: gatt_address.clone(),
+                                device_name: Some(format!("ZHTP-{}", &handshake.node_id[0..8])),
+                                rssi: -50, // Placeholder RSSI
+                                mtu: 247,  // Default BLE MTU
+                                last_seen: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            };
+                            bluetooth_protocol_for_gatt.current_connections.write().await.insert(gatt_address.clone(), ble_connection);
+                            info!("   ✅ Registered GATT peer in bluetooth_protocol.current_connections: {}", gatt_address);
                             
                             // Track connected device
                             let device_key = handshake.node_id.to_string();
