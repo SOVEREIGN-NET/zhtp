@@ -4563,7 +4563,11 @@ impl BluetoothRouter {
     }
     
     /// Initialize Bluetooth mesh protocol for phone connectivity
-    pub async fn initialize(&self, mesh_connections: Arc<RwLock<HashMap<PublicKey, lib_network::mesh::connection::MeshConnection>>>) -> Result<()> {
+    pub async fn initialize(
+        &self,
+        mesh_connections: Arc<RwLock<HashMap<PublicKey, lib_network::mesh::connection::MeshConnection>>>,
+        peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<PublicKey>>,
+    ) -> Result<()> {
         info!("Initializing Bluetooth mesh protocol for phone connectivity...");
         
         // Create Bluetooth mesh protocol instance
@@ -4590,6 +4594,7 @@ impl BluetoothRouter {
         // Spawn GATT message handler task with mesh_connections access
         let connected_devices = self.connected_devices.clone();
         let mesh_conns = mesh_connections.clone();
+        let ble_peer_notify = peer_discovery_tx.clone();
         tokio::spawn(async move {
             while let Some(gatt_message) = gatt_rx.recv().await {
                 use lib_network::protocols::bluetooth::gatt::GattMessage;
@@ -4626,6 +4631,7 @@ impl BluetoothRouter {
                             };
                             
                             // Add to mesh network
+                            let is_new_peer = !mesh_conns.read().await.contains_key(&peer_pubkey);
                             mesh_conns.write().await.insert(peer_pubkey.clone(), connection);
                             info!("   ✅ Added GATT peer {} to mesh network", handshake.node_id);
                             
@@ -4633,6 +4639,18 @@ impl BluetoothRouter {
                             let device_key = handshake.node_id.to_string();
                             let device_info = format!("Bluetooth GATT (protocols: {:?})", handshake.protocols);
                             connected_devices.write().await.insert(device_key, device_info);
+                            
+                            // If this is a new peer, request their blockchain via BLE
+                            // This enables testing of duplicate sync prevention when both BLE and UDP are connected
+                            if is_new_peer {
+                                info!("🔄 New BLE peer detected - notifying for blockchain sync");
+                                // Notify about new BLE peer so unified_server can trigger blockchain sync
+                                if let Some(notify_tx) = &ble_peer_notify {
+                                    if let Err(e) = notify_tx.send(peer_pubkey.clone()) {
+                                        warn!("Failed to send BLE peer notification: {}", e);
+                                    }
+                                }
+                            }
                         }
                     }
                     GattMessage::DhtBridge(text) => {
@@ -5541,8 +5559,11 @@ impl ZhtpUnifiedServer {
         // IP scanning disabled - using multicast/mDNS/WiFi Direct for efficient discovery
         info!("⏭️  IP Scanner: DISABLED (inefficient, replaced by broadcast)");
         
-        // Initialize Bluetooth LE discovery (pass mesh_connections for GATT handler)
-        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone()).await {
+        // Create BLE peer discovery notification channel for blockchain sync trigger
+        let (ble_peer_tx, mut ble_peer_rx) = tokio::sync::mpsc::unbounded_channel::<PublicKey>();
+        
+        // Initialize Bluetooth LE discovery (pass mesh_connections and peer notification channel for GATT handler)
+        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone(), Some(ble_peer_tx)).await {
             warn!("❌ Bluetooth LE: FAILED - {}", e);
             warn!("   → Continuing without Bluetooth LE support");
             "FAILED"
@@ -5551,6 +5572,38 @@ impl ZhtpUnifiedServer {
             info!("   → Low-power device-to-device mesh");
             "ACTIVE"
         };
+        
+        // Start BLE peer discovery listener for blockchain sync
+        let mesh_router_for_ble = self.mesh_router.clone();
+        tokio::spawn(async move {
+            info!("🔔 BLE peer discovery listener active - will trigger blockchain sync on BLE peer handshake");
+            while let Some(peer_pubkey) = ble_peer_rx.recv().await {
+                info!("🔔 BLE peer discovered: {} - requesting blockchain via BLE", hex::encode(&peer_pubkey.key_id[..8]));
+                
+                // Send BlockchainRequest to the BLE peer
+                match mesh_router_for_ble.get_sender_public_key().await {
+                    Ok(our_pubkey) => {
+                        let request_id = uuid::Uuid::new_v4().as_u128() as u64;
+                        let request_message = ZhtpMeshMessage::BlockchainRequest {
+                            requester: our_pubkey,
+                            request_id,
+                            request_type: lib_network::types::mesh_message::BlockchainRequestType::FullChain,
+                        };
+                        
+                        // Send blockchain request to BLE peer
+                        if let Err(e) = mesh_router_for_ble.send_to_peer(&peer_pubkey, request_message).await {
+                            warn!("Failed to request blockchain from BLE peer: {}", e);
+                        } else {
+                            info!("📤 Sent BlockchainRequest via BLE to new peer");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Could not get sender public key for BlockchainRequest: {}", e);
+                    }
+                }
+            }
+            info!("BLE peer discovery listener stopped");
+        });
         
         // Skip Bluetooth Classic for now (focusing on BLE only)
         let bluetooth_classic_status = {
