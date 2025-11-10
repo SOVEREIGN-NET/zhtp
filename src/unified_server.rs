@@ -1671,6 +1671,9 @@ impl MeshRouter {
             lib_network::protocols::NetworkProtocol::BluetoothLE | 
             lib_network::protocols::NetworkProtocol::BluetoothClassic => {
                 let bluetooth = self.bluetooth_protocol.read().await;
+                info!("🔍 DEBUG: send_to_peer checking bluetooth_protocol: {}", 
+                      if bluetooth.is_some() { "Some(protocol)" } else { "None" });
+                
                 if let Some(ref protocol) = *bluetooth {
                     protocol.send_mesh_message(peer_address, &serialized).await?;
                     info!("✅ Sent {} bytes via Bluetooth to {}", serialized.len(), peer_address);
@@ -5733,9 +5736,20 @@ impl ZhtpUnifiedServer {
             "FAILED"
         } else {
             // Store bluetooth protocol in mesh router for send_to_peer()
-            if let Some(protocol) = self.bluetooth_router.get_protocol().await {
-                *self.mesh_router.bluetooth_protocol.write().await = Some(protocol);
+            // CRITICAL: Must be set BEFORE spawning peer discovery listener task
+            let protocol_opt = self.bluetooth_router.get_protocol().await;
+            info!("🔍 DEBUG: get_protocol() returned: {}", if protocol_opt.is_some() { "Some(protocol)" } else { "None" });
+            
+            if let Some(protocol) = protocol_opt {
+                *self.mesh_router.bluetooth_protocol.write().await = Some(protocol.clone());
                 info!("✅ Bluetooth protocol registered with MeshRouter for message routing");
+                
+                // Verify it was set correctly
+                let verify = self.mesh_router.bluetooth_protocol.read().await;
+                info!("🔍 DEBUG: Verified mesh_router.bluetooth_protocol is now: {}", 
+                      if verify.is_some() { "Some(protocol)" } else { "None" });
+            } else {
+                warn!("⚠️ Bluetooth protocol not available after initialization - BLE sync will fail");
             }
             
             info!("✅ Bluetooth LE: ACTIVE (100m range)");
@@ -5743,7 +5757,8 @@ impl ZhtpUnifiedServer {
             "ACTIVE"
         };
         
-        // Start BLE peer discovery listener for blockchain sync with sync coordinator
+        // IMPORTANT: Clone mesh_router AFTER bluetooth_protocol is set above
+        // This ensures the spawned task has access to the protocol
         let mesh_router_for_ble = self.mesh_router.clone();
         let sync_coordinator_for_ble = self.mesh_router.sync_coordinator.clone();
         let edge_sync_manager_for_ble = self.mesh_router.edge_sync_manager.clone();
