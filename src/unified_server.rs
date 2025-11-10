@@ -4568,11 +4568,20 @@ impl BluetoothRouter {
         mesh_connections: Arc<RwLock<HashMap<PublicKey, lib_network::mesh::connection::MeshConnection>>>,
         peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<PublicKey>>,
         our_public_key: PublicKey,
+        blockchain_provider: Option<Arc<dyn lib_network::blockchain_sync::BlockchainProvider>>,
     ) -> Result<()> {
         info!("Initializing Bluetooth mesh protocol for phone connectivity...");
         
         // Create Bluetooth mesh protocol instance
         let mut bluetooth_protocol = BluetoothMeshProtocol::new(self.node_id, our_public_key)?;
+        
+        // ========================================================================
+        // Phase 6: Enable BLE edge node sync if blockchain provider is available
+        // ========================================================================
+        if let Some(provider) = blockchain_provider {
+            bluetooth_protocol.set_blockchain_provider(provider).await;
+            info!(" BLE edge sync enabled - will serve headers/proofs to mobile devices");
+        }
         
         // Create GATT message channel for forwarding GATT writes to this router
         let (gatt_tx, mut gatt_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4664,6 +4673,16 @@ impl BluetoothRouter {
                     GattMessage::RelayQuery(data) => {
                         info!(" GATT: Relay query ({} bytes)", data.len());
                         // Relay queries processed by MeshRouter relay protocol
+                    }
+                    GattMessage::HeadersRequest { .. } |
+                    GattMessage::BootstrapProofRequest { .. } |
+                    GattMessage::FragmentHeader { .. } => {
+                        // Edge sync messages - handled by BluetoothMeshProtocol
+                        // These are processed in handle_edge_sync_message()
+                        info!(" GATT: Edge sync message received (handled by protocol layer)");
+                    }
+                    _ => {
+                        info!(" GATT: Unknown message type");
                     }
                 }
             }
@@ -5582,7 +5601,13 @@ impl ZhtpUnifiedServer {
         };
         
         // Initialize Bluetooth LE discovery (pass mesh_connections and peer notification channel for GATT handler)
-        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone(), Some(ble_peer_tx), our_public_key).await {
+        let bluetooth_provider = self.mesh_router.blockchain_provider.read().await.clone();
+        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(
+            self.mesh_router.connections.clone(), 
+            Some(ble_peer_tx), 
+            our_public_key,
+            bluetooth_provider
+        ).await {
             warn!("❌ Bluetooth LE: FAILED - {}", e);
             warn!("   → Continuing without Bluetooth LE support");
             "FAILED"
@@ -5680,8 +5705,21 @@ impl ZhtpUnifiedServer {
         // Bind TCP listener for HTTP API
         let bind_addr = format!("0.0.0.0:{}", self.port);
         info!(" Binding TCP listener on {}...", bind_addr);
-        let listener = TcpListener::bind(&bind_addr).await
-            .context(format!("Failed to bind TCP listener on {}", bind_addr))?;
+        let listener = match TcpListener::bind(&bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!(" Failed to bind TCP listener on {}", bind_addr);
+                error!(" Error: {}", e);
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    error!(" PERMISSION DENIED - Possible fixes:");
+                    error!("   1. Docker: Run container as root (remove 'USER' directive in Dockerfile)");
+                    error!("   2. Windows: Run as Administrator or use port >= 1024");
+                    error!("   3. Linux: Use 'sudo' or grant CAP_NET_BIND_SERVICE capability");
+                    error!("   4. Check if port {} is already in use: netstat -ano | findstr {}", self.port, self.port);
+                }
+                return Err(anyhow::anyhow!("Failed to bind TCP listener on {}: {}", bind_addr, e));
+            }
+        };
         self.tcp_listener = Some(Arc::new(listener));
         info!(" TCP listener bound successfully on port {}", self.port);
         

@@ -73,116 +73,6 @@ impl Web4Handler {
             }
         }
     }
-
-    /// Serve domain content
-    async fn serve_domain_content(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
-        // Extract domain and path from: /api/v1/web4/serve/{domain}{path}
-        // Example: /api/v1/web4/serve/hello-world.zhtp/style.css
-        let uri = &request.uri;
-        let prefix = "/api/v1/web4/serve/";
-        
-        if !uri.starts_with(prefix) {
-            return Ok(ZhtpResponse::error(
-                ZhtpStatus::BadRequest,
-                "Invalid serve path".to_string(),
-            ));
-        }
-
-        let remainder = &uri[prefix.len()..];
-        let parts: Vec<&str> = remainder.splitn(2, '/').collect();
-        
-        let domain = parts[0];
-        let path = if parts.len() > 1 {
-            format!("/{}", parts[1])
-        } else {
-            "/".to_string()
-        };
-
-        info!(" Serving content for domain: {} path: {}", domain, path);
-
-        let manager = self.web4_manager.read().await;
-        
-        match manager.registry.get_domain_content(domain, &path).await {
-            Ok(content) => {
-                // Determine content type from path
-                let content_type = if path.ends_with(".css") {
-                    "text/css"
-                } else if path.ends_with(".js") {
-                    "application/javascript"
-                } else if path.ends_with(".json") {
-                    "application/json"
-                } else if path.ends_with(".png") {
-                    "image/png"
-                } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                    "image/jpeg"
-                } else if path.ends_with(".gif") {
-                    "image/gif"
-                } else if path.ends_with(".svg") {
-                    "image/svg+xml"
-                } else if path.ends_with(".webp") {
-                    "image/webp"
-                } else if path.ends_with(".mp4") {
-                    "video/mp4"
-                } else if path.ends_with(".webm") {
-                    "video/webm"
-                } else if path.ends_with(".mp3") {
-                    "audio/mpeg"
-                } else if path.ends_with(".wav") {
-                    "audio/wav"
-                } else if path.ends_with(".ogg") {
-                    "audio/ogg"
-                } else {
-                    "text/html"
-                };
-
-                // For HTML content, inject base tag to fix relative URLs
-                let final_content = if content_type == "text/html" {
-                    match String::from_utf8(content.clone()) {
-                        Ok(mut html) => {
-                            // Escape domain name for HTML (defense-in-depth, domain is already validated)
-                            let escaped_domain = domain
-                                .replace('&', "&amp;")
-                                .replace('<', "&lt;")
-                                .replace('>', "&gt;")
-                                .replace('"', "&quot;")
-                                .replace('\'', "&#39;");
-                            
-                            let base_url = format!("http://localhost:9333/api/v1/web4/serve/{}/", escaped_domain);
-                            let base_tag = format!("<base href=\"{}\">", base_url);
-                            
-                            // Insert base tag after <head> tag
-                            if let Some(head_pos) = html.find("<head>") {
-                                let insert_pos = head_pos + "<head>".len();
-                                html.insert_str(insert_pos, &format!("\n    {}", base_tag));
-                                html.into_bytes()
-                            } else {
-                                // If no <head> tag, return original content
-                                content
-                            }
-                        }
-                        Err(_) => content, // Not valid UTF-8, return as-is
-                    }
-                } else {
-                    content
-                };
-
-                info!(" Serving {} bytes of {}", final_content.len(), content_type);
-
-                Ok(ZhtpResponse::success_with_content_type(
-                    final_content,
-                    content_type.to_string(),
-                    None,
-                ))
-            }
-            Err(e) => {
-                error!("Failed to serve content for {}{}: {}", domain, path, e);
-                Ok(ZhtpResponse::error(
-                    ZhtpStatus::NotFound,
-                    format!("Content not found: {}", e),
-                ))
-            }
-        }
-    }
 }
 
 /// Implement ZHTP request handler trait to integrate with existing server
@@ -225,11 +115,6 @@ impl ZhtpRequestHandler for Web4Handler {
             // Statistics endpoint
             "/api/v1/web4/statistics" => {
                 self.get_web4_statistics().await
-            }
-            
-            // Serve domain content
-            path if path.starts_with("/api/v1/web4/serve/") => {
-                self.serve_domain_content(request).await
             }
             
             _ => Ok(ZhtpResponse::error(

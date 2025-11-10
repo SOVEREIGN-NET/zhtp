@@ -105,6 +105,12 @@ pub enum NodeAction {
         /// Network environment (overrides config file)
         #[arg(short, long, value_parser = ["mainnet", "testnet", "dev"])]
         network: Option<String>,
+        /// Enable edge node mode (lightweight sync for mobile/constrained devices)
+        #[arg(long)]
+        edge_mode: bool,
+        /// Maximum headers to store in edge mode (default: 500 = ~100KB)
+        #[arg(long, default_value = "500")]
+        edge_max_headers: usize,
     },
     /// Stop the orchestrator node
     Stop,

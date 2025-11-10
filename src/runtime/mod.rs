@@ -180,6 +180,9 @@ pub struct RuntimeOrchestrator {
     
     // Node type detection
     is_edge_node: Arc<RwLock<bool>>,
+    
+    // Edge node configuration
+    edge_max_headers: Arc<RwLock<usize>>,
 }
 
 impl RuntimeOrchestrator {
@@ -227,6 +230,7 @@ impl RuntimeOrchestrator {
             joined_existing_network: Arc::new(RwLock::new(false)),
             reward_orchestrator: Arc::new(RwLock::new(None)),
             is_edge_node: Arc::new(RwLock::new(is_edge_node)),
+            edge_max_headers: Arc::new(RwLock::new(500)),  // Default 500 headers (~100 KB)
             startup_order: vec![
                 ComponentId::Crypto,      // Foundation layer
                 ComponentId::ZK,          // Zero-knowledge proofs
@@ -434,6 +438,21 @@ impl RuntimeOrchestrator {
     /// Check if this node is configured as an edge node
     pub async fn is_edge_node(&self) -> bool {
         *self.is_edge_node.read().await
+    }
+
+    /// Set edge node mode (overrides auto-detection)
+    pub async fn set_edge_node(&self, is_edge: bool) {
+        *self.is_edge_node.write().await = is_edge;
+    }
+
+    /// Set edge node max headers configuration
+    pub async fn set_edge_max_headers(&self, max_headers: usize) {
+        *self.edge_max_headers.write().await = max_headers;
+    }
+
+    /// Get edge node max headers configuration
+    pub async fn get_edge_max_headers(&self) -> usize {
+        *self.edge_max_headers.read().await
     }
 
     /// Start all components in the correct order

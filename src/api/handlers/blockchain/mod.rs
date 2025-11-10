@@ -93,6 +93,10 @@ impl ZhtpRequestHandler for BlockchainHandler {
             (ZhtpMethod::Get, path) if path.starts_with("/api/v1/blockchain/blocks/") => {
                 self.handle_get_block_range(request).await
             }
+            // Edge node stats endpoint
+            (ZhtpMethod::Get, "/api/v1/blockchain/edge-stats") => {
+                self.handle_edge_stats(request).await
+            }
             (ZhtpMethod::Post, "/api/v1/blockchain/transaction/estimate-fee") => {
                 self.handle_estimate_transaction_fee(request).await
             }
@@ -1617,6 +1621,71 @@ impl BlockchainHandler {
         Ok(ZhtpResponse::success_with_content_type(
             serialized_blocks,
             "application/octet-stream".to_string(),
+            None,
+        ))
+    }
+
+    /// Get edge node statistics and sync status
+    async fn handle_edge_stats(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
+        let blockchain_arc = self.get_blockchain().await
+            .map_err(|e| anyhow::anyhow!("Failed to get blockchain: {}", e))?;
+        let blockchain = blockchain_arc.read().await;
+        
+        #[derive(Serialize)]
+        struct EdgeNodeStats {
+            mode: String,
+            current_height: u64,
+            headers_stored: usize,
+            storage_bytes: usize,
+            utxos_tracked: usize,
+            network_height: u64,
+            sync_complete: bool,
+            last_sync: u64,
+            sync_method: String,
+        }
+        
+        // Calculate statistics
+        let current_height = blockchain.get_height();
+        let headers_count = blockchain.blocks.len();
+        
+        // Estimate storage: ~200 bytes per header
+        let storage_bytes = headers_count * 200;
+        
+        // Count UTXOs
+        let utxos_tracked = blockchain.utxo_set.len();
+        
+        // Network height is same as current height in this context
+        // In a full implementation, this would query other peers
+        let network_height = current_height;
+        
+        // Sync is complete if we have blocks
+        let sync_complete = headers_count > 0;
+        
+        // Last sync timestamp (use latest block timestamp if available)
+        let last_sync = blockchain.blocks.last()
+            .map(|b| b.header.timestamp)
+            .unwrap_or(0);
+        
+        let stats = EdgeNodeStats {
+            mode: "edge".to_string(),
+            current_height,
+            headers_stored: headers_count,
+            storage_bytes,
+            utxos_tracked,
+            network_height,
+            sync_complete,
+            last_sync,
+            sync_method: "ble".to_string(),
+        };
+        
+        tracing::info!("📊 Edge node stats: height={}, headers={}, storage={}KB, utxos={}", 
+                      stats.current_height, stats.headers_stored, 
+                      stats.storage_bytes / 1024, stats.utxos_tracked);
+        
+        let json_response = serde_json::to_vec(&stats)?;
+        Ok(ZhtpResponse::success_with_content_type(
+            json_response,
+            "application/json".to_string(),
             None,
         ))
     }

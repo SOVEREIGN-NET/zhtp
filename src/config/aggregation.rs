@@ -123,6 +123,8 @@ pub struct BlockchainConfig {
     pub max_block_size: usize,
     pub zk_transactions: bool,
     pub smart_contracts: bool,
+    pub edge_mode: bool,
+    pub edge_max_headers: usize,
 }
 
 /// Consensus configuration
@@ -407,6 +409,8 @@ impl Default for NodeConfig {
                 max_block_size: 1_048_576,
                 zk_transactions: true,
                 smart_contracts: true,
+                edge_mode: false,
+                edge_max_headers: 500,
             },
             
             consensus_config: ConsensusConfig {

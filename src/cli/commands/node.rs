@@ -171,7 +171,7 @@ struct ExistingNetworkInfo {
 
 pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
     match args.action {
-        NodeAction::Start { config, port, dev, pure_mesh, network } => {
+        NodeAction::Start { config, port, dev, pure_mesh, network, edge_mode, edge_max_headers } => {
             println!(" Starting ZHTP orchestrator node...");
             if let Some(p) = port {
                 println!("Port override: {}", p);
@@ -179,6 +179,13 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("Config: {:?}", config);
             println!("Dev mode: {}", dev);
             println!("Pure mesh mode: {}", pure_mesh);
+            
+            if edge_mode {
+                println!("🔹 Edge Mode: ENABLED (lightweight sync)");
+                println!("   Max headers: {} (~{} KB storage)", 
+                    edge_max_headers, 
+                    (edge_max_headers * 200) / 1024);
+            }
             
             // Parse network override if provided
             let network_override = network.as_ref().and_then(|n| {
@@ -227,7 +234,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             let mut node_config = load_configuration(&cli_args).await?;
             
             // ========================================================================
-            // Detect node type from configuration
+            // Detect node type from configuration or CLI flags
             // ========================================================================
             let hosted_storage = if node_config.storage_config.hosted_storage_gb > 0 {
                 node_config.storage_config.hosted_storage_gb
@@ -236,24 +243,30 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 node_config.storage_config.storage_capacity_gb
             };
             
-            let is_edge_node = !node_config.consensus_config.validator_enabled 
+            // CLI flag takes precedence over auto-detection
+            let is_edge_node = if edge_mode {
+                true  // Explicitly enabled via --edge-mode
+            } else {
+                !node_config.consensus_config.validator_enabled 
                 && !node_config.blockchain_config.smart_contracts
-                && hosted_storage < 100;  // Less than 100 GB hosted storage = edge node
+                && hosted_storage < 100  // Less than 100 GB hosted storage = edge node
+            };
             
             let is_validator = node_config.consensus_config.validator_enabled;
             
             if is_edge_node {
-                println!("🔷 Node Type Detected: EDGE NODE");
-                println!("   - Headers-only sync (~100 KB storage)");
+                println!("🔷 Node Type: EDGE NODE");
+                println!("   - Headers-only sync (~{} KB storage)", (edge_max_headers * 200) / 1024);
                 println!("   - ZK proof verification (no generation)");
                 println!("   - Optimized for BLE/mesh networking");
+                println!("   - Max headers: {}", edge_max_headers);
             } else if is_validator {
-                println!("🔶 Node Type Detected: VALIDATOR");
+                println!("🔶 Node Type: VALIDATOR");
                 println!("   - Full blockchain sync");
                 println!("   - Consensus participation");
                 println!("   - ZK proof generation");
             } else {
-                println!("🔹 Node Type Detected: FULL NODE");
+                println!("🔹 Node Type: FULL NODE");
                 println!("   - Full blockchain sync");
                 println!("   - No consensus participation");
             }
@@ -308,6 +321,13 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             
             println!("Starting runtime orchestrator...");
             let mut orchestrator = RuntimeOrchestrator::new(node_config.clone()).await?;
+            
+            // Set edge mode configuration if explicitly enabled via CLI
+            if is_edge_node {
+                orchestrator.set_edge_node(true).await;
+                orchestrator.set_edge_max_headers(edge_max_headers).await;
+                println!("🔹 Edge mode configured: max_headers={}", edge_max_headers);
+            }
             
             // ================================================================
             // NEW APPROACH: Start network components FIRST, then discover peers
