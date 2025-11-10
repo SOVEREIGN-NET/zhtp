@@ -4664,10 +4664,14 @@ impl BluetoothRouter {
                             // This is required for send_mesh_message() to find the peer
                             let gatt_address = format!("gatt://{}", handshake.node_id);
                             let ble_connection = lib_network::protocols::bluetooth::BluetoothConnection {
-                                device_address: gatt_address.clone(),
-                                device_name: Some(format!("ZHTP-{}", &handshake.node_id[0..8])),
-                                rssi: -50, // Placeholder RSSI
+                                peer_id: handshake.node_id.to_string(),
+                                address: gatt_address.clone(),
                                 mtu: 247,  // Default BLE MTU
+                                rssi: -50, // Placeholder RSSI
+                                connected_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
                                 last_seen: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
