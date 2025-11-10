@@ -2287,6 +2287,7 @@ pub struct ProtocolsComponent {
     lib_integration: Arc<RwLock<Option<ZhtpIntegration>>>,
     environment: crate::config::environment::Environment,  // NEW: Network-specific environment
     api_port: u16,  // Port from configuration
+    is_edge_node: bool,  // Node type detection
 }
 
 impl std::fmt::Debug for ProtocolsComponent {
@@ -2311,6 +2312,20 @@ impl ProtocolsComponent {
             lib_integration: Arc::new(RwLock::new(None)),
             environment,  // Store environment for network-specific paths
             api_port,     // Store port from configuration
+            is_edge_node: false,  // Default to full node
+        }
+    }
+    
+    pub fn new_with_node_type(environment: crate::config::environment::Environment, api_port: u16, is_edge_node: bool) -> Self {
+        Self {
+            status: Arc::new(RwLock::new(ComponentStatus::Stopped)),
+            start_time: Arc::new(RwLock::new(None)),
+            unified_server: Arc::new(RwLock::new(None)),
+            zdns_server: Arc::new(RwLock::new(None)),
+            lib_integration: Arc::new(RwLock::new(None)),
+            environment,
+            api_port,
+            is_edge_node,
         }
     }
 }
@@ -2426,6 +2441,29 @@ impl Component for ProtocolsComponent {
             self.api_port,  // Use port from configuration
             Some(peer_discovery_tx),
         ).await?;
+        
+        // ========================================================================
+        // Initialize blockchain provider for network layer
+        // ========================================================================
+        info!("🔗 Setting up blockchain provider for network layer...");
+        let blockchain_provider = Arc::new(crate::runtime::network_blockchain_provider::ZhtpBlockchainProvider::new());
+        unified_server.set_blockchain_provider(blockchain_provider).await;
+        info!("✅ Blockchain provider configured for network message handlers");
+        
+        // ========================================================================
+        // Detect node type and initialize appropriate sync manager
+        // ========================================================================
+        if self.is_edge_node {
+            info!("🔷 Initializing Edge Node sync manager (headers-only)...");
+            let edge_sync_manager = Arc::new(lib_network::EdgeNodeSyncManager::new(500)); // 500 header capacity
+            unified_server.set_edge_sync_manager(edge_sync_manager).await;
+            info!("✅ Edge node sync manager initialized");
+            info!("   - Header capacity: 500");
+            info!("   - Storage: ~100 KB");
+            info!("   - ZK proof verification only");
+        } else {
+            info!("🔹 Using full blockchain sync (complete blocks)");
+        }
         
         // Initialize ZHTP authentication manager with blockchain identity
         info!(" Initializing ZHTP authentication and relay protocols...");

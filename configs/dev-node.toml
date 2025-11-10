@@ -72,7 +72,7 @@ reward_pool_percentage = 5.0
 [protocols_config]
 lib_enabled = true
 zdns_enabled = true
-api_port = 8080
+api_port = 9333
 max_connections = 100
 request_timeout_ms = 10000  # Shorter timeouts for development
 

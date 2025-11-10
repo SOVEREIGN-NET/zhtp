@@ -31,6 +31,11 @@ reputation_enabled = true
 
 [storage_config]
 dht_port = 33442
+# Storage allocation for dedicated storage nodes:
+blockchain_storage_gb = 500      # Blockchain data (full history)
+hosted_storage_gb = 5000         # LARGE hosted storage (primary purpose)
+personal_storage_gb = 0          # Personal files (unlimited, not counted)
+# Legacy field (backward compatibility):
 storage_capacity_gb = 5000  # LARGE storage capacity - primary purpose
 replication_factor = 3
 erasure_coding = true
@@ -74,7 +79,7 @@ reward_pool_percentage = 20.0  # Higher rewards for storage provision
 [protocols_config]
 lib_enabled = true
 zdns_enabled = true
-api_port = 8080
+api_port = 9333
 max_connections = 1000
 request_timeout_ms = 45000  # Longer timeouts for storage operations
 

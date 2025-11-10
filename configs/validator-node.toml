@@ -101,7 +101,7 @@ reward_pool_percentage = 15.0  # Higher rewards for validators
 [protocols_config]
 lib_enabled = true
 zdns_enabled = true
-api_port = 8080
+api_port = 9333
 max_connections = 1500
 request_timeout_ms = 25000  # Faster timeouts for validators
 

@@ -75,10 +75,30 @@ pub struct IdentityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub dht_port: u16,
+    /// DEPRECATED: Use blockchain_storage_gb instead
+    /// This field is kept for backward compatibility with old configs
+    #[serde(default)]
     pub storage_capacity_gb: u64,
+    /// Dedicated storage for blockchain data (blocks, transactions, state)
+    /// This grows dynamically with the blockchain but should be allocated upfront
+    #[serde(default = "default_blockchain_storage")]
+    pub blockchain_storage_gb: u64,
+    /// Maximum storage to allocate for hosting others' data (DHT, IPFS-style)
+    /// This is capped and used for earning storage rewards
+    /// Set to 0 to disable hosting (edge nodes)
+    #[serde(default)]
+    pub hosted_storage_gb: u64,
+    /// Personal data storage (user's own files, unlimited by design)
+    /// Not counted toward edge node detection
+    #[serde(default)]
+    pub personal_storage_gb: u64,
     pub replication_factor: u8,
     pub erasure_coding: bool,
     pub pricing_tier: String, // hot, warm, cold, archive
+}
+
+fn default_blockchain_storage() -> u64 {
+    100 // 100 GB default for blockchain data
 }
 
 /// Network and mesh configuration
@@ -357,6 +377,9 @@ impl Default for NodeConfig {
             
             storage_config: StorageConfig {
                 dht_port: 33442,
+                blockchain_storage_gb: 100,
+                hosted_storage_gb: 100,
+                personal_storage_gb: 0,
                 storage_capacity_gb: 100,
                 replication_factor: 3,
                 erasure_coding: true,

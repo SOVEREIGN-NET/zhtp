@@ -16,6 +16,7 @@ pub mod components;
 pub mod shared_blockchain;
 pub mod shared_dht;
 pub mod blockchain_provider;
+pub mod network_blockchain_provider;
 pub mod mesh_router_provider;
 pub mod did_startup;
 pub mod routing_rewards;
@@ -28,6 +29,7 @@ pub use components::*;
 pub use shared_blockchain::*;
 pub use shared_dht::*;
 pub use blockchain_provider::{initialize_global_blockchain_provider, set_global_blockchain};
+pub use network_blockchain_provider::ZhtpBlockchainProvider;
 pub use mesh_router_provider::{initialize_global_mesh_router_provider, set_global_mesh_router, get_broadcast_metrics};
 
 /// Component status information
@@ -175,6 +177,9 @@ pub struct RuntimeOrchestrator {
     
     // Unified reward orchestrator
     reward_orchestrator: Arc<RwLock<Option<Arc<reward_orchestrator::RewardOrchestrator>>>>,
+    
+    // Node type detection
+    is_edge_node: Arc<RwLock<bool>>,
 }
 
 impl RuntimeOrchestrator {
@@ -192,6 +197,24 @@ impl RuntimeOrchestrator {
         
         // Store shutdown monitor handle for cleanup
         let _shutdown_handle = shutdown_monitor;
+        // Detect node type from config
+        // Edge nodes are constrained devices that:
+        // 1. Don't validate blocks (validator_enabled = false)
+        // 2. Don't run smart contracts (resource constrained)
+        // 3. Don't host storage for others (hosted_storage_gb = 0 or very small)
+        //
+        // Note: blockchain_storage_gb is NOT counted - it grows dynamically
+        // Note: personal_storage_gb is NOT counted - user's own data
+        let hosted_storage = if config.storage_config.hosted_storage_gb > 0 {
+            config.storage_config.hosted_storage_gb
+        } else {
+            // Backward compatibility: use old storage_capacity_gb field
+            config.storage_config.storage_capacity_gb
+        };
+        
+        let is_edge_node = !config.consensus_config.validator_enabled 
+            && !config.blockchain_config.smart_contracts
+            && hosted_storage < 100;  // Less than 100 GB hosted storage = edge node
         
         let orchestrator = Self {
             config,
@@ -203,6 +226,7 @@ impl RuntimeOrchestrator {
             user_wallet: Arc::new(RwLock::new(None)),
             joined_existing_network: Arc::new(RwLock::new(false)),
             reward_orchestrator: Arc::new(RwLock::new(None)),
+            is_edge_node: Arc::new(RwLock::new(is_edge_node)),
             startup_order: vec![
                 ComponentId::Crypto,      // Foundation layer
                 ComponentId::ZK,          // Zero-knowledge proofs
@@ -333,7 +357,8 @@ impl RuntimeOrchestrator {
         self.register_component(Arc::new(BlockchainComponent::new_with_full_config(user_wallet, environment, bootstrap_validators, joined_existing_network))).await?;
         self.register_component(Arc::new(ConsensusComponent::new(environment))).await?;
         self.register_component(Arc::new(EconomicsComponent::new())).await?;
-        self.register_component(Arc::new(ProtocolsComponent::new(environment, api_port))).await?;
+        let is_edge_node = *self.is_edge_node.read().await;
+        self.register_component(Arc::new(ProtocolsComponent::new_with_node_type(environment, api_port, is_edge_node))).await?;
         self.register_component(Arc::new(ApiComponent::new())).await?;
         
         info!("All components registered successfully");
@@ -404,6 +429,11 @@ impl RuntimeOrchestrator {
             info!("🆕 Orchestrator: Creating new genesis network");
         }
         Ok(())
+    }
+    
+    /// Check if this node is configured as an edge node
+    pub async fn is_edge_node(&self) -> bool {
+        *self.is_edge_node.read().await
     }
 
     /// Start all components in the correct order

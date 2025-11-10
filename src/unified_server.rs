@@ -869,6 +869,12 @@ pub struct MeshRouter {
     encryption_sessions: Arc<RwLock<HashMap<String, ZhtpEncryptionSession>>>,
     // Blockchain sync infrastructure
     sync_manager: Arc<lib_network::blockchain_sync::BlockchainSyncManager>,
+    // Sync coordinator to prevent duplicate syncs across transports
+    sync_coordinator: Arc<lib_network::blockchain_sync::SyncCoordinator>,
+    // Edge node sync for BLE devices (optional - only for edge nodes)
+    edge_sync_manager: Arc<RwLock<Option<Arc<lib_network::blockchain_sync::EdgeNodeSyncManager>>>>,
+    // Blockchain provider for network layer access
+    blockchain_provider: Arc<RwLock<Option<Arc<dyn lib_network::blockchain_sync::BlockchainProvider>>>>,
     // Protocol instances for sending
     bluetooth_protocol: Arc<RwLock<Option<BluetoothMeshProtocol>>>,
     udp_socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
@@ -899,6 +905,9 @@ impl MeshRouter {
         
         // Create blockchain sync manager
         let sync_manager = Arc::new(lib_network::blockchain_sync::BlockchainSyncManager::new());
+        
+        // Create sync coordinator to prevent duplicate syncs across transports
+        let sync_coordinator = Arc::new(lib_network::blockchain_sync::SyncCoordinator::new());
         
         // Create duplicate tracking for block propagation
         let recent_blocks = Arc::new(RwLock::new(HashMap::new()));
@@ -940,6 +949,9 @@ impl MeshRouter {
             zhtp_auth_manager: Arc::new(RwLock::new(None)),
             encryption_sessions: Arc::new(RwLock::new(HashMap::new())),
             sync_manager,
+            sync_coordinator,
+            edge_sync_manager: Arc::new(RwLock::new(None)),
+            blockchain_provider: Arc::new(RwLock::new(None)),
             bluetooth_protocol: Arc::new(RwLock::new(None)),
             udp_socket: Arc::new(RwLock::new(None)),
             recent_blocks,
@@ -1559,6 +1571,20 @@ impl MeshRouter {
         *self.udp_socket.write().await = Some(socket);
     }
     
+    /// Set blockchain provider for network layer access
+    /// This allows the message handler to access blockchain data for edge node sync
+    pub async fn set_blockchain_provider(&self, provider: Arc<dyn lib_network::blockchain_sync::BlockchainProvider>) {
+        *self.blockchain_provider.write().await = Some(provider);
+        info!("✅ Blockchain provider configured for edge node sync");
+    }
+    
+    /// Set edge sync manager for BLE device support
+    /// Only needed if this node will serve edge nodes (BLE devices)
+    pub async fn set_edge_sync_manager(&self, manager: Arc<lib_network::blockchain_sync::EdgeNodeSyncManager>) {
+        *self.edge_sync_manager.write().await = Some(manager);
+        info!("✅ Edge node sync manager configured for BLE support");
+    }
+    
     /// Set mesh server for reward tracking (Phase 2.5)
     /// This links the router to the mesh server so routing rewards can be recorded
     pub async fn set_mesh_server(&self, mesh_server: Arc<RwLock<ZhtpMeshServer>>) {
@@ -1947,8 +1973,18 @@ impl MeshRouter {
                                 Ok(blockchain_data) => {
                                     info!(" Exported {} bytes of blockchain data", blockchain_data.len());
                                     
+                                    // Get our public key
+                                    let our_pubkey = match self.get_sender_public_key().await {
+                                        Ok(key) => key,
+                                        Err(e) => {
+                                            error!("Failed to get our public key for blockchain sync: {}", e);
+                                            return Ok(None);
+                                        }
+                                    };
+                                    
                                     // Chunk data for UDP protocol (always UDP since request came via UDP)
                                     match lib_network::blockchain_sync::BlockchainSyncManager::chunk_blockchain_data_for_protocol(
+                                        our_pubkey,
                                         *request_id,
                                         blockchain_data,
                                         &lib_network::protocols::NetworkProtocol::UDP
@@ -2027,9 +2063,11 @@ impl MeshRouter {
                     
                     return Ok(None);
                 }
-                ZhtpMeshMessage::BlockchainData { request_id, chunk_index, total_chunks, data: chunk_data, complete_data_hash } => {
-                    info!(" Blockchain chunk {}/{} received (request_id: {}, {} bytes)", 
-                          chunk_index + 1, total_chunks, request_id, chunk_data.len());
+                ZhtpMeshMessage::BlockchainData { sender, request_id, chunk_index, total_chunks, data: chunk_data, complete_data_hash } => {
+                    info!(" Blockchain chunk {}/{} received from peer {} (request_id: {}, {} bytes)", 
+                          chunk_index + 1, total_chunks, hex::encode(&sender.key_id[..8]), request_id, chunk_data.len());
+                    
+                    let sync_type = lib_network::blockchain_sync::SyncType::FullBlockchain;
                     
                     // Add chunk to sync manager
                     match self.sync_manager.add_chunk(
@@ -2059,11 +2097,22 @@ impl MeshRouter {
                                             drop(blockchain_lock); // Release write lock
                                             
                                             info!("✅ Blockchain merge complete - all components automatically updated");
+                                            
+                                            // Mark sync as complete in coordinator
+                                            self.sync_coordinator.complete_sync(sender, *request_id, sync_type).await;
                                         }
-                                        Err(e) => error!("Failed to import blockchain: {}", e),
+                                        Err(e) => {
+                                            error!("Failed to import blockchain: {}", e);
+                                            // Mark sync as failed in coordinator
+                                            self.sync_coordinator.fail_sync(sender, *request_id, sync_type).await;
+                                        }
                                     }
                                 }
-                                Err(e) => error!("Failed to get global blockchain: {}", e),
+                                Err(e) => {
+                                    error!("Failed to get global blockchain: {}", e);
+                                    // Mark sync as failed in coordinator
+                                    self.sync_coordinator.fail_sync(sender, *request_id, sync_type).await;
+                                }
                             }
                         }
                         Ok(None) => {
@@ -2071,6 +2120,8 @@ impl MeshRouter {
                         }
                         Err(e) => {
                             error!("Failed to process blockchain chunk: {}", e);
+                            // Mark sync as failed in coordinator
+                            self.sync_coordinator.fail_sync(sender, *request_id, sync_type).await;
                         }
                     }
                     
@@ -4028,7 +4079,21 @@ impl MeshRouter {
                                                                                                 // ============================================================================
                                                                                                 // PHASE 5: AUTOMATIC BLOCKCHAIN SYNC
                                                                                                 // ============================================================================
-                                                                                                info!("🔄 Phase 5: Initiating automatic blockchain sync with peer {}", node_id);
+                                                                                                // Phase 5: Check if sync should be initiated (prevents duplicates)
+                                                                                                // ============================================================================
+                                                                                                info!("🔄 Phase 5: Checking if blockchain sync needed with peer {}", node_id);
+                                                                                                
+                                                                                                // Determine protocol type for this connection
+                                                                                                let protocol = lib_network::protocols::NetworkProtocol::TCP; // TCP connection
+                                                                                                
+                                                                                                // Full blockchain sync (complete blocks)
+                                                                                                let sync_type = lib_network::blockchain_sync::SyncType::FullBlockchain;
+                                                                                                
+                                                                                                // Check if we should initiate sync (prevents duplicates across transports)
+                                                                                                if !self.sync_coordinator.register_peer_protocol(&peer_pubkey, protocol.clone(), sync_type).await {
+                                                                                                    info!("⏭️ Skipping sync - already syncing with peer {} via another transport", node_id);
+                                                                                                    return Ok(true);
+                                                                                                }
                                                                                                 
                                                                                                 // Create blockchain sync request
                                                                                                 let (request_id, sync_message) = match self.sync_manager
@@ -4036,9 +4101,13 @@ impl MeshRouter {
                                                                                                     Ok(result) => result,
                                                                                                     Err(e) => {
                                                                                                         warn!("Failed to create blockchain sync request: {}", e);
+                                                                                                        self.sync_coordinator.fail_sync(&peer_pubkey, 0, sync_type).await;
                                                                                                         return Ok(true); // Still return success for connection
                                                                                                     }
                                                                                                 };
+                                                                                                
+                                                                                                // Record that sync has started
+                                                                                                self.sync_coordinator.start_sync(&peer_pubkey, request_id, sync_type, protocol).await;
                                                                                                 
                                                                                                 info!(" Sending blockchain sync request (ID: {}) to peer {}", request_id, node_id);
                                                                                                 
@@ -4046,6 +4115,7 @@ impl MeshRouter {
                                                                                                 if let Err(e) = self.send_to_peer(&peer_pubkey, sync_message).await {
                                                                                                     warn!("Failed to send blockchain sync request to peer {}: {}", node_id, e);
                                                                                                     warn!("   Connection established but sync will not start automatically");
+                                                                                                    self.sync_coordinator.fail_sync(&peer_pubkey, request_id, sync_type).await;
                                                                                                 } else {
                                                                                                     info!(" Blockchain sync request sent successfully");
                                                                                                     info!("    Waiting for blockchain chunks from peer...");
@@ -6091,6 +6161,16 @@ impl ZhtpUnifiedServer {
         self.mesh_router.initialize_relay_protocol().await
     }
     
+    /// Set blockchain provider for network layer (delegates to mesh router)
+    pub async fn set_blockchain_provider(&mut self, provider: Arc<dyn lib_network::blockchain_sync::BlockchainProvider>) {
+        self.mesh_router.set_blockchain_provider(provider).await;
+    }
+    
+    /// Set edge sync manager (delegates to mesh router)
+    pub async fn set_edge_sync_manager(&mut self, manager: Arc<lib_network::blockchain_sync::EdgeNodeSyncManager>) {
+        self.mesh_router.set_edge_sync_manager(manager).await;
+    }
+    
     /// Get server information
     pub fn get_server_info(&self) -> (Uuid, u16) {
         (self.server_id, self.port)
@@ -6161,6 +6241,9 @@ impl Clone for MeshRouter {
             zhtp_auth_manager: self.zhtp_auth_manager.clone(),
             encryption_sessions: self.encryption_sessions.clone(),
             sync_manager: self.sync_manager.clone(),
+            edge_sync_manager: self.edge_sync_manager.clone(),
+            sync_coordinator: self.sync_coordinator.clone(),
+            blockchain_provider: self.blockchain_provider.clone(),
             bluetooth_protocol: self.bluetooth_protocol.clone(),
             udp_socket: self.udp_socket.clone(),
             recent_blocks: self.recent_blocks.clone(),

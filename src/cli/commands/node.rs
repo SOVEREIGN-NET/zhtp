@@ -226,6 +226,38 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("Loading configuration...");
             let mut node_config = load_configuration(&cli_args).await?;
             
+            // ========================================================================
+            // Detect node type from configuration
+            // ========================================================================
+            let hosted_storage = if node_config.storage_config.hosted_storage_gb > 0 {
+                node_config.storage_config.hosted_storage_gb
+            } else {
+                // Backward compatibility: use old storage_capacity_gb field
+                node_config.storage_config.storage_capacity_gb
+            };
+            
+            let is_edge_node = !node_config.consensus_config.validator_enabled 
+                && !node_config.blockchain_config.smart_contracts
+                && hosted_storage < 100;  // Less than 100 GB hosted storage = edge node
+            
+            let is_validator = node_config.consensus_config.validator_enabled;
+            
+            if is_edge_node {
+                println!("🔷 Node Type Detected: EDGE NODE");
+                println!("   - Headers-only sync (~100 KB storage)");
+                println!("   - ZK proof verification (no generation)");
+                println!("   - Optimized for BLE/mesh networking");
+            } else if is_validator {
+                println!("🔶 Node Type Detected: VALIDATOR");
+                println!("   - Full blockchain sync");
+                println!("   - Consensus participation");
+                println!("   - ZK proof generation");
+            } else {
+                println!("🔹 Node Type Detected: FULL NODE");
+                println!("   - Full blockchain sync");
+                println!("   - No consensus participation");
+            }
+            
             // Apply network override if --network flag was provided
             if let Some(network_env) = network_override {
                 println!("🔄 Overriding config environment with CLI flag: {}", network_env);

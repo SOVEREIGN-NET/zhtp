@@ -31,10 +31,15 @@ reputation_enabled = true
 
 [storage_config]
 dht_port = 33442
-storage_capacity_gb = 500  # Full nodes provide moderate storage
+# Storage allocation for full nodes:
+blockchain_storage_gb = 500     # Full blockchain data (grows dynamically)
+hosted_storage_gb = 500         # Host data for others (earn rewards)
+personal_storage_gb = 0         # Personal files (unlimited, not counted)
+# Legacy field (backward compatibility):
+storage_capacity_gb = 500
 replication_factor = 3
 erasure_coding = true
-pricing_tier = "warm"
+pricing_tier = "hot"
 
 [network_config]
 mesh_port = 33444
@@ -74,7 +79,7 @@ reward_pool_percentage = 10.0
 [protocols_config]
 lib_enabled = true
 zdns_enabled = true
-api_port = 8080
+api_port = 9333
 max_connections = 2000  # Higher connection limit for full nodes
 request_timeout_ms = 30000
 

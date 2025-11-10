@@ -31,7 +31,12 @@ reputation_enabled = true
 
 [storage_config]
 dht_port = 33442
-storage_capacity_gb = 100  # Minimal storage for edge nodes
+# Storage allocation for edge nodes (constrained devices):
+blockchain_storage_gb = 20      # Blockchain data (headers only + selective data)
+hosted_storage_gb = 0           # Don't host data for others (edge node marker)
+personal_storage_gb = 0         # Personal files (not used for edge detection)
+# Legacy field (backward compatibility):
+storage_capacity_gb = 20
 replication_factor = 2
 erasure_coding = false  # Conserve CPU
 pricing_tier = "warm"
@@ -94,7 +99,7 @@ reward_pool_percentage = 25.0  # Highest rewards for mesh infrastructure
 [protocols_config]
 lib_enabled = true
 zdns_enabled = true
-api_port = 8080
+api_port = 9333
 max_connections = 500  # Lower connection limit
 request_timeout_ms = 60000  # Longer timeouts for mesh routing
 
