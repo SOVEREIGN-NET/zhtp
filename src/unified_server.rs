@@ -876,7 +876,7 @@ pub struct MeshRouter {
     // Blockchain provider for network layer access
     blockchain_provider: Arc<RwLock<Option<Arc<dyn lib_network::blockchain_sync::BlockchainProvider>>>>,
     // Protocol instances for sending
-    bluetooth_protocol: Arc<RwLock<Option<BluetoothMeshProtocol>>>,
+    bluetooth_protocol: Arc<RwLock<Option<Arc<BluetoothMeshProtocol>>>>,
     udp_socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
     // Real-time block propagation - duplicate detection
     recent_blocks: Arc<RwLock<HashMap<lib_blockchain::types::Hash, u64>>>,
@@ -1562,7 +1562,7 @@ impl MeshRouter {
     }
     
     /// Set Bluetooth protocol for sending messages
-    pub async fn set_bluetooth_protocol(&self, protocol: BluetoothMeshProtocol) {
+    pub async fn set_bluetooth_protocol(&self, protocol: Arc<BluetoothMeshProtocol>) {
         *self.bluetooth_protocol.write().await = Some(protocol);
     }
     
@@ -4404,7 +4404,7 @@ pub struct WiFiRouter {
 pub struct BluetoothRouter {
     connected_devices: Arc<RwLock<HashMap<String, String>>>,
     node_id: [u8; 32],
-    protocol: Arc<RwLock<Option<BluetoothMeshProtocol>>>,
+    protocol: Arc<RwLock<Option<Arc<BluetoothMeshProtocol>>>>,
 }
 
 /// Bluetooth Classic RFCOMM router for high-throughput mesh
@@ -4605,8 +4605,9 @@ impl BluetoothRouter {
             info!(" Bluetooth advertising started successfully");
         }
         
-        // Store the protocol instance
-        *self.protocol.write().await = Some(bluetooth_protocol);
+        // Store the protocol instance (wrapped in Arc for sharing)
+        let protocol_arc = Arc::new(bluetooth_protocol);
+        *self.protocol.write().await = Some(protocol_arc);
         
         // Spawn GATT message handler task with mesh_connections access
         let connected_devices = self.connected_devices.clone();
@@ -4806,6 +4807,11 @@ impl BluetoothRouter {
         info!("Your phone can now discover and connect to this ZHTP node via Bluetooth");
         
         Ok(())
+    }
+    
+    /// Get the bluetooth protocol instance for message routing
+    pub async fn get_protocol(&self) -> Option<Arc<BluetoothMeshProtocol>> {
+        (*self.protocol.read().await).clone()
     }
     
     /// Handle incoming Bluetooth connection with full mesh authentication
@@ -5726,6 +5732,12 @@ impl ZhtpUnifiedServer {
             warn!("   → Continuing without Bluetooth LE support");
             "FAILED"
         } else {
+            // Store bluetooth protocol in mesh router for send_to_peer()
+            if let Some(protocol) = self.bluetooth_router.get_protocol().await {
+                *self.mesh_router.bluetooth_protocol.write().await = Some(protocol);
+                info!("✅ Bluetooth protocol registered with MeshRouter for message routing");
+            }
+            
             info!("✅ Bluetooth LE: ACTIVE (100m range)");
             info!("   → Low-power device-to-device mesh");
             "ACTIVE"
