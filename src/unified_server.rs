@@ -4569,6 +4569,7 @@ impl BluetoothRouter {
         peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<PublicKey>>,
         our_public_key: PublicKey,
         blockchain_provider: Option<Arc<dyn lib_network::blockchain_sync::BlockchainProvider>>,
+        sync_coordinator: Arc<lib_network::blockchain_sync::SyncCoordinator>,
     ) -> Result<()> {
         info!("Initializing Bluetooth mesh protocol for phone connectivity...");
         
@@ -4605,6 +4606,7 @@ impl BluetoothRouter {
         let connected_devices = self.connected_devices.clone();
         let mesh_conns = mesh_connections.clone();
         let ble_peer_notify = peer_discovery_tx.clone();
+        let sync_coordinator_for_gatt = sync_coordinator.clone();
         tokio::spawn(async move {
             while let Some(gatt_message) = gatt_rx.recv().await {
                 use lib_network::protocols::bluetooth::gatt::GattMessage;
@@ -4674,12 +4676,46 @@ impl BluetoothRouter {
                         info!(" GATT: Relay query ({} bytes)", data.len());
                         // Relay queries processed by MeshRouter relay protocol
                     }
-                    GattMessage::HeadersRequest { .. } |
-                    GattMessage::BootstrapProofRequest { .. } |
+                    GattMessage::HeadersRequest { request_id, start_height, count } => {
+                        info!(" GATT: HeadersRequest received (ID: {}, height: {}, count: {})", 
+                              request_id, start_height, count);
+                        // Handle via BluetoothMeshProtocol's edge sync handler
+                        // Response will be sent back via BLE automatically
+                    }
+                    GattMessage::BootstrapProofRequest { request_id, current_height } => {
+                        info!(" GATT: BootstrapProofRequest received (ID: {}, current: {})", 
+                              request_id, current_height);
+                        // Handle via BluetoothMeshProtocol's edge sync handler
+                    }
+                    GattMessage::HeadersResponse { request_id, headers } => {
+                        info!("✅ GATT: HeadersResponse received (ID: {}, {} headers)", 
+                              request_id, headers.len());
+                        // Edge node received headers - sync complete
+                        
+                        // Find peer by request_id and mark sync complete
+                        if let Some((peer_id, sync_type)) = sync_coordinator_for_gatt.find_peer_by_sync_id(request_id).await {
+                            sync_coordinator_for_gatt.complete_sync(&peer_id, request_id, sync_type).await;
+                            info!("   ✅ Marked edge sync complete for peer {}", hex::encode(&peer_id.key_id[..8]));
+                        } else {
+                            warn!("   ⚠️ No active sync found for request_id {}", request_id);
+                        }
+                    }
+                    GattMessage::BootstrapProofResponse { request_id, proof_height, headers, .. } => {
+                        info!("✅ GATT: BootstrapProofResponse received (ID: {}, proof up to {}, {} headers)", 
+                              request_id, proof_height, headers.len());
+                        // Edge node received proof + headers - sync complete
+                        
+                        // Find peer by request_id and mark sync complete
+                        if let Some((peer_id, sync_type)) = sync_coordinator_for_gatt.find_peer_by_sync_id(request_id).await {
+                            sync_coordinator_for_gatt.complete_sync(&peer_id, request_id, sync_type).await;
+                            info!("   ✅ Marked edge sync complete for peer {}", hex::encode(&peer_id.key_id[..8]));
+                        } else {
+                            warn!("   ⚠️ No active sync found for request_id {}", request_id);
+                        }
+                    }
                     GattMessage::FragmentHeader { .. } => {
-                        // Edge sync messages - handled by BluetoothMeshProtocol
-                        // These are processed in handle_edge_sync_message()
-                        info!(" GATT: Edge sync message received (handled by protocol layer)");
+                        info!(" GATT: Fragment header received (multi-part message)");
+                        // Handled by fragment reassembler in BluetoothMeshProtocol
                     }
                     _ => {
                         info!(" GATT: Unknown message type");
@@ -5606,7 +5642,8 @@ impl ZhtpUnifiedServer {
             self.mesh_router.connections.clone(), 
             Some(ble_peer_tx), 
             our_public_key,
-            bluetooth_provider
+            bluetooth_provider,
+            self.mesh_router.sync_coordinator.clone()
         ).await {
             warn!("❌ Bluetooth LE: FAILED - {}", e);
             warn!("   → Continuing without Bluetooth LE support");
@@ -5617,32 +5654,84 @@ impl ZhtpUnifiedServer {
             "ACTIVE"
         };
         
-        // Start BLE peer discovery listener for blockchain sync
+        // Start BLE peer discovery listener for blockchain sync with sync coordinator
         let mesh_router_for_ble = self.mesh_router.clone();
+        let sync_coordinator_for_ble = self.mesh_router.sync_coordinator.clone();
+        let edge_sync_manager_for_ble = self.mesh_router.edge_sync_manager.clone();
+        
         tokio::spawn(async move {
-            info!("🔔 BLE peer discovery listener active - will trigger blockchain sync on BLE peer handshake");
+            info!("🔔 BLE peer discovery listener active - will trigger sync via BLE (coordinated with other protocols)");
             while let Some(peer_pubkey) = ble_peer_rx.recv().await {
-                info!("🔔 BLE peer discovered: {} - requesting blockchain via BLE", hex::encode(&peer_pubkey.key_id[..8]));
+                info!("🔔 BLE peer discovered: {} - checking if sync needed", hex::encode(&peer_pubkey.key_id[..8]));
                 
-                // Send BlockchainRequest to the BLE peer
+                // Check if edge node or full node
+                let edge_manager_guard: tokio::sync::RwLockReadGuard<'_, Option<Arc<lib_network::blockchain_sync::EdgeNodeSyncManager>>> = edge_sync_manager_for_ble.read().await;
+                let is_edge_node = edge_manager_guard.is_some();
+                let sync_type = if is_edge_node {
+                    lib_network::blockchain_sync::SyncType::EdgeNode
+                } else {
+                    lib_network::blockchain_sync::SyncType::FullBlockchain
+                };
+                drop(edge_manager_guard);
+                
+                // Check with sync coordinator if we should sync with this peer via BLE
+                let should_sync = sync_coordinator_for_ble.register_peer_protocol(
+                    &peer_pubkey,
+                    lib_network::protocols::NetworkProtocol::BluetoothLE,
+                    sync_type
+                ).await;
+                
+                if !should_sync {
+                    info!("🔄 Skipping BLE sync with peer {} (already syncing via faster protocol)", 
+                          hex::encode(&peer_pubkey.key_id[..8]));
+                    continue;
+                }
+                
+                info!("✅ Sync coordinator approved {:?} sync via BLE with peer {}", 
+                      sync_type, hex::encode(&peer_pubkey.key_id[..8]));
+                
+                // Get our public key for the request
                 match mesh_router_for_ble.get_sender_public_key().await {
                     Ok(our_pubkey) => {
                         let request_id = uuid::Uuid::new_v4().as_u128() as u64;
-                        let request_message = ZhtpMeshMessage::BlockchainRequest {
-                            requester: our_pubkey,
+                        
+                        // Record sync start with coordinator
+                        sync_coordinator_for_ble.start_sync(
+                            &peer_pubkey,
                             request_id,
-                            request_type: lib_network::types::mesh_message::BlockchainRequestType::FullChain,
+                            sync_type,
+                            lib_network::protocols::NetworkProtocol::BluetoothLE
+                        ).await;
+                        
+                        // Create appropriate request based on node type
+                        let request_message = if is_edge_node {
+                            // Edge nodes request headers only
+                            ZhtpMeshMessage::HeadersRequest {
+                                requester: our_pubkey,
+                                request_id,
+                                start_height: 0,
+                                count: 500, // Default edge node capacity
+                            }
+                        } else {
+                            // Full nodes request complete blockchain
+                            ZhtpMeshMessage::BlockchainRequest {
+                                requester: our_pubkey,
+                                request_id,
+                                request_type: lib_network::types::mesh_message::BlockchainRequestType::FullChain,
+                            }
                         };
                         
-                        // Send blockchain request to BLE peer
+                        // Send request to BLE peer
                         if let Err(e) = mesh_router_for_ble.send_to_peer(&peer_pubkey, request_message).await {
                             warn!("Failed to request blockchain from BLE peer: {}", e);
+                            // Mark sync as failed
+                            sync_coordinator_for_ble.fail_sync(&peer_pubkey, request_id, sync_type).await;
                         } else {
-                            info!("📤 Sent BlockchainRequest via BLE to new peer");
+                            info!("📤 Sent {:?} request via BLE to peer (ID: {})", sync_type, request_id);
                         }
                     }
                     Err(e) => {
-                        warn!("⚠️ Could not get sender public key for BlockchainRequest: {}", e);
+                        warn!("⚠️ Could not get sender public key for BLE sync: {}", e);
                     }
                 }
             }
