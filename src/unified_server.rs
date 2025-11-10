@@ -4623,8 +4623,11 @@ impl BluetoothRouter {
             while let Some(gatt_message) = gatt_rx.recv().await {
                 use lib_network::protocols::bluetooth::gatt::GattMessage;
                 match gatt_message {
-                    GattMessage::MeshHandshake(data) => {
+                    GattMessage::MeshHandshake { data, peripheral_id } => {
                         info!(" GATT: Received mesh message ({} bytes)", data.len());
+                        if let Some(ref pid) = peripheral_id {
+                            info!("   🆔 Peripheral ID: {}", pid);
+                        }
                         
                         // Try to parse as MeshHandshake first (initial connection)
                         if let Ok(handshake) = bincode::deserialize::<lib_network::discovery::local_network::MeshHandshake>(&data) {
@@ -4633,11 +4636,19 @@ impl BluetoothRouter {
                             // Extract the real cryptographic public key from handshake
                             let peer_pubkey = handshake.public_key.clone();
                             
+                            // 🔧 FIX: Use peripheral_id for macOS, node_id for other platforms
+                            let gatt_address = if let Some(ref pid) = peripheral_id {
+                                format!("gatt://{}", pid)  // macOS: Use CBPeripheral UUID
+                            } else {
+                                format!("gatt://{}", handshake.node_id)  // Windows/Linux: Use node_id
+                            };
+                            info!("   📍 GATT address: {}", gatt_address);
+                            
                             // Create mesh connection for GATT peer
                             let connection = lib_network::mesh::connection::MeshConnection {
                                 peer_id: peer_pubkey.clone(),
                                 protocol: lib_network::protocols::NetworkProtocol::BluetoothLE,
-                                peer_address: Some(format!("gatt://{}", handshake.node_id)),
+                                peer_address: Some(gatt_address.clone()),
                                 signal_strength: 0.7,
                                 bandwidth_capacity: 250_000, // 250 KB/s BLE
                                 latency_ms: 100,
@@ -4662,7 +4673,6 @@ impl BluetoothRouter {
                             
                             // 🔧 FIX: Also register with BluetoothMeshProtocol.current_connections
                             // This is required for send_mesh_message() to find the peer
-                            let gatt_address = format!("gatt://{}", handshake.node_id);
                             let ble_connection = lib_network::protocols::bluetooth::BluetoothConnection {
                                 peer_id: handshake.node_id.to_string(),
                                 address: gatt_address.clone(),
