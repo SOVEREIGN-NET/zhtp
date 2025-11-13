@@ -4468,7 +4468,7 @@ impl BluetoothRouter {
             while let Some(gatt_message) = gatt_rx.recv().await {
                 use lib_network::protocols::bluetooth::gatt::GattMessage;
                 match gatt_message {
-                    GattMessage::MeshHandshake(data) => {
+                    GattMessage::MeshHandshake { data, peripheral_id: _ } => {
                         info!(" GATT: Received mesh handshake ({} bytes)", data.len());
                         // Parse and process mesh handshake
                         if let Ok(handshake) = bincode::deserialize::<lib_network::discovery::local_network::MeshHandshake>(&data) {
@@ -4520,6 +4520,26 @@ impl BluetoothRouter {
                     GattMessage::RelayQuery(data) => {
                         info!(" GATT: Relay query ({} bytes)", data.len());
                         // Relay queries processed by MeshRouter relay protocol
+                    }
+                    GattMessage::HeadersRequest { .. } => {
+                        debug!(" GATT: Headers request (edge node sync)");
+                        // Handled by edge node sync manager
+                    }
+                    GattMessage::HeadersResponse { .. } => {
+                        debug!(" GATT: Headers response (edge node sync)");
+                        // Handled by edge node sync manager
+                    }
+                    GattMessage::BootstrapProofRequest { .. } => {
+                        debug!(" GATT: Bootstrap proof request (edge node sync)");
+                        // Handled by edge node sync manager
+                    }
+                    GattMessage::BootstrapProofResponse { .. } => {
+                        debug!(" GATT: Bootstrap proof response (edge node sync)");
+                        // Handled by edge node sync manager
+                    }
+                    GattMessage::FragmentHeader { .. } => {
+                        debug!(" GATT: Fragment header (multi-part message)");
+                        // Handled by fragment reassembly
                     }
                 }
             }
@@ -5414,27 +5434,51 @@ impl ZhtpUnifiedServer {
         
         // IP scanning disabled - using multicast/mDNS/WiFi Direct for efficient discovery
         info!("⏭️  IP Scanner: DISABLED (inefficient, replaced by broadcast)");
-        
+
         // Initialize Bluetooth LE discovery (pass mesh_connections for GATT handler)
-        let bluetooth_le_status = if let Err(e) = self.bluetooth_router.initialize(self.mesh_router.connections.clone()).await {
-            warn!("❌ Bluetooth LE: FAILED - {}", e);
-            warn!("   → Continuing without Bluetooth LE support");
-            "FAILED"
-        } else {
-            info!("✅ Bluetooth LE: ACTIVE (100m range)");
-            info!("   → Low-power device-to-device mesh");
-            "ACTIVE"
+        // Use timeout to prevent hanging on bluetoothctl commands
+        let bluetooth_le_status = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            self.bluetooth_router.initialize(self.mesh_router.connections.clone())
+        ).await {
+            Ok(Ok(_)) => {
+                info!("✅ Bluetooth LE: ACTIVE (100m range)");
+                info!("   → Low-power device-to-device mesh");
+                "ACTIVE"
+            }
+            Ok(Err(e)) => {
+                warn!("❌ Bluetooth LE: FAILED - {}", e);
+                warn!("   → Continuing without Bluetooth LE support");
+                "FAILED"
+            }
+            Err(_) => {
+                warn!("❌ Bluetooth LE: TIMEOUT - initialization took too long");
+                warn!("   → Continuing without Bluetooth LE support");
+                "FAILED"
+            }
         };
         
         // Initialize Bluetooth Classic for high-throughput mesh
-        let bluetooth_classic_status = if let Err(e) = self.bluetooth_classic_router.initialize().await {
-            warn!("❌ Bluetooth Classic: FAILED - {}", e);
-            warn!("   → Continuing without Bluetooth Classic support");
-            "FAILED"
-        } else {
-            info!("✅ Bluetooth Classic: ACTIVE (375 KB/s RFCOMM)");
-            info!("   → High-bandwidth device-to-device connections");
-            "ACTIVE"
+        // Use timeout to prevent hanging on bluetoothctl commands
+        let bluetooth_classic_status = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            self.bluetooth_classic_router.initialize()
+        ).await {
+            Ok(Ok(_)) => {
+                info!("✅ Bluetooth Classic: ACTIVE (375 KB/s RFCOMM)");
+                info!("   → High-bandwidth device-to-device connections");
+                "ACTIVE"
+            }
+            Ok(Err(e)) => {
+                warn!("❌ Bluetooth Classic: FAILED - {}", e);
+                warn!("   → Continuing without Bluetooth Classic support");
+                "FAILED"
+            }
+            Err(_) => {
+                warn!("❌ Bluetooth Classic: TIMEOUT - initialization took too long");
+                warn!("   → Continuing without Bluetooth Classic support");
+                "FAILED"
+            }
         };
         
         // Initialize WiFi Direct + mDNS
