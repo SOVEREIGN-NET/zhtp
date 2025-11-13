@@ -56,7 +56,13 @@ pub enum ZhtpCommand {
     
     /// Identity operations (orchestrated)
     Identity(IdentityArgs),
-    
+
+    /// Backup operations (encrypted backup files)
+    Backup(BackupArgs),
+
+    /// Guardian management for social recovery
+    Guardian(GuardianArgs),
+
     /// Network operations (orchestrated)
     Network(NetworkArgs),
     
@@ -223,6 +229,178 @@ pub enum IdentityAction {
     },
     /// List identities
     List,
+    /// Restore identity from seed phrases
+    RestoreFromSeeds {
+        /// Primary wallet seed phrase (20 words, space-separated)
+        #[arg(long)]
+        primary_seed: String,
+        /// UBI wallet seed phrase (20 words, space-separated)
+        #[arg(long)]
+        ubi_seed: String,
+        /// Savings wallet seed phrase (20 words, space-separated)
+        #[arg(long)]
+        savings_seed: String,
+        /// Display name for the restored identity
+        #[arg(long)]
+        display_name: String,
+        /// Optional password to set
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Verify a seed phrase without importing
+    VerifySeed {
+        /// Seed phrase to verify (20 words, space-separated)
+        #[arg(long)]
+        seed_phrase: String,
+        /// Wallet type (primary, ubi, savings)
+        #[arg(long)]
+        wallet_type: Option<String>,
+    },
+    /// Export seed phrases for an identity (DANGEROUS - requires password)
+    ExportSeeds {
+        /// Identity ID to export seeds for
+        #[arg(long)]
+        identity_id: String,
+        /// Password for authentication
+        #[arg(long)]
+        password: String,
+        /// Optional output file path
+        #[arg(long)]
+        output: Option<String>,
+    },
+}
+
+/// Backup operation commands
+#[derive(Args, Debug, Clone)]
+pub struct BackupArgs {
+    #[command(subcommand)]
+    pub action: BackupAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum BackupAction {
+    /// Export identity to encrypted backup file
+    Export {
+        /// Identity ID to export
+        #[arg(long)]
+        identity_id: String,
+        /// Password to encrypt backup
+        #[arg(long)]
+        password: String,
+        /// Output file path
+        #[arg(long)]
+        output: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Import identity from encrypted backup file
+    Import {
+        /// Backup file path
+        #[arg(long)]
+        input: String,
+        /// Password to decrypt backup
+        #[arg(long)]
+        password: String,
+    },
+    /// Verify backup file integrity
+    Verify {
+        /// Backup file path
+        #[arg(long)]
+        input: String,
+    },
+}
+
+/// Guardian operation commands
+#[derive(Args, Debug, Clone)]
+pub struct GuardianArgs {
+    #[command(subcommand)]
+    pub action: GuardianAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum GuardianAction {
+    /// Add a new guardian
+    Add {
+        /// Identity ID to add guardian for
+        #[arg(long)]
+        identity_id: String,
+        /// Guardian display name
+        #[arg(long)]
+        name: String,
+        /// Guardian email
+        #[arg(long)]
+        email: Option<String>,
+        /// Guardian phone
+        #[arg(long)]
+        phone: Option<String>,
+        /// Guardian's identity ID (if they're a user)
+        #[arg(long)]
+        guardian_identity_id: Option<String>,
+    },
+    /// List guardians for an identity
+    List {
+        /// Identity ID
+        #[arg(long)]
+        identity_id: String,
+    },
+    /// Remove a guardian
+    Remove {
+        /// Identity ID
+        #[arg(long)]
+        identity_id: String,
+        /// Guardian ID to remove
+        #[arg(long)]
+        guardian_id: String,
+    },
+    /// Accept guardian invitation
+    Accept {
+        /// Guardian ID
+        #[arg(long)]
+        guardian_id: String,
+        /// Verification code
+        #[arg(long)]
+        code: String,
+    },
+    /// Decline guardian invitation
+    Decline {
+        /// Guardian ID
+        #[arg(long)]
+        guardian_id: String,
+    },
+    /// Initiate recovery request
+    InitiateRecovery {
+        /// Identity ID to recover
+        #[arg(long)]
+        identity_id: String,
+        /// New password
+        #[arg(long)]
+        new_password: String,
+    },
+    /// Approve recovery request (as a guardian)
+    ApproveRecovery {
+        /// Recovery request ID
+        #[arg(long)]
+        request_id: String,
+        /// Guardian ID
+        #[arg(long)]
+        guardian_id: String,
+        /// Verification code
+        #[arg(long)]
+        code: String,
+    },
+    /// Check recovery request status
+    RecoveryStatus {
+        /// Recovery request ID
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Cancel a recovery request
+    CancelRecovery {
+        /// Recovery request ID
+        #[arg(long)]
+        request_id: String,
+    },
 }
 
 /// Network operation commands
@@ -377,6 +555,8 @@ pub async fn run_cli() -> Result<()> {
         ZhtpCommand::Wallet(args) => commands::wallet::handle_wallet_command(args.clone(), &cli).await,
         ZhtpCommand::Dao(args) => commands::dao::handle_dao_command(args.clone(), &cli).await,
         ZhtpCommand::Identity(args) => commands::identity::handle_identity_command(args.clone(), &cli).await,
+        ZhtpCommand::Backup(args) => commands::backup::handle_backup_command(args.clone(), &cli).await,
+        ZhtpCommand::Guardian(args) => commands::guardian::handle_guardian_command(args.clone(), &cli).await,
         ZhtpCommand::Network(args) => commands::network::handle_network_command(args.clone(), &cli).await,
         ZhtpCommand::Blockchain(args) => commands::blockchain::handle_blockchain_command(args.clone(), &cli).await,
         ZhtpCommand::Monitor(args) => commands::monitor::handle_monitor_command(args.clone(), &cli).await,

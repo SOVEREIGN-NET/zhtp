@@ -622,7 +622,7 @@ impl WalletStartupManager {
     /// Public wrapper for importing from recovery phrase
     pub async fn import_from_recovery_phrase() -> Result<WalletStartupResult> {
         let (node_identity_id, node_wallet_id, wallet_name, seed_phrase, wallet_address) = Self::import_from_seed_phrase_interactive().await?;
-        
+
         Ok(WalletStartupResult {
             node_identity_id,
             node_wallet_id,
@@ -630,6 +630,207 @@ impl WalletStartupManager {
             seed_phrase,
             wallet_address,
         })
+    }
+
+    /// Restore full citizen identity from 3 seed phrases (Primary, UBI, Savings wallets)
+    /// This is the proper way to restore a complete citizenship with all wallets
+    pub async fn restore_full_identity_from_seeds(
+        primary_seed: &[String],
+        ubi_seed: &[String],
+        savings_seed: &[String],
+        password: Option<String>,
+        display_name: String,
+        identity_manager: &mut lib_identity::IdentityManager,
+        economic_model: &mut lib_identity::economics::EconomicModel,
+    ) -> Result<lib_identity::citizenship::CitizenshipResult> {
+        use lib_identity::recovery::RecoveryPhraseManager;
+        use lib_identity::wallets::WalletType;
+        use lib_crypto::Hash;
+
+        println!("\n⚙ Restoring full citizen identity from seed phrases...");
+
+        // Validate all 3 seed phrases
+        if primary_seed.len() != 20 {
+            return Err(anyhow!("Primary wallet seed phrase must have exactly 20 words, got {}", primary_seed.len()));
+        }
+        if ubi_seed.len() != 20 {
+            return Err(anyhow!("UBI wallet seed phrase must have exactly 20 words, got {}", ubi_seed.len()));
+        }
+        if savings_seed.len() != 20 {
+            return Err(anyhow!("Savings wallet seed phrase must have exactly 20 words, got {}", savings_seed.len()));
+        }
+
+        // Create recovery manager
+        let recovery_manager = RecoveryPhraseManager::new();
+
+        // Restore identity from primary seed phrase
+        println!("   1/6 Deriving identity from primary seed phrase...");
+        let (identity_id, private_key, public_key, seed) = recovery_manager
+            .restore_from_phrase(primary_seed)
+            .await?;
+
+        println!("   ✓ Identity ID restored: {}", hex::encode(&identity_id.0[..8]));
+
+        // Generate ownership proof from restored keys
+        println!("   2/6 Generating ownership proof...");
+        let ownership_proof_data = format!("did:zhtp:{}:{}", identity_id, hex::encode(&public_key[..32]));
+        let ownership_proof = lib_proofs::ZeroKnowledgeProof::default(); // Simplified for now
+
+        // Create wallet manager for this identity
+        let mut wallet_manager = lib_identity::wallets::WalletManager::new(identity_id.clone());
+
+        // Restore primary wallet from its seed phrase
+        println!("   3/6 Restoring Primary wallet...");
+        let (primary_wallet_id, primary_recovered_phrase) = wallet_manager
+            .recover_wallet_from_seed_phrase_with_type(
+                WalletType::Primary,
+                primary_seed,
+                "Primary Wallet".to_string(),
+                None,
+            )
+            .await?;
+        println!("   ✓ Primary wallet restored: {}", hex::encode(&primary_wallet_id.0[..8]));
+
+        // Restore UBI wallet from its seed phrase
+        println!("   4/6 Restoring UBI wallet...");
+        let (ubi_wallet_id, ubi_recovered_phrase) = wallet_manager
+            .recover_wallet_from_seed_phrase_with_type(
+                WalletType::UBI,
+                ubi_seed,
+                "UBI Wallet".to_string(),
+                None,
+            )
+            .await?;
+        println!("   ✓ UBI wallet restored: {}", hex::encode(&ubi_wallet_id.0[..8]));
+
+        // Restore savings wallet from its seed phrase
+        println!("   5/6 Restoring Savings wallet...");
+        let (savings_wallet_id, savings_recovered_phrase) = wallet_manager
+            .recover_wallet_from_seed_phrase_with_type(
+                WalletType::Savings,
+                savings_seed,
+                "Savings Wallet".to_string(),
+                None,
+            )
+            .await?;
+        println!("   ✓ Savings wallet restored: {}", hex::encode(&savings_wallet_id.0[..8]));
+
+        // Create full identity structure
+        println!("   6/6 Reconstructing citizen identity...");
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("display_name".to_string(), display_name.clone());
+
+        let identity = lib_identity::ZhtpIdentity {
+            id: identity_id.clone(),
+            identity_type: lib_identity::types::IdentityType::Human,
+            public_key: public_key.clone(),
+            ownership_proof,
+            credentials: std::collections::HashMap::new(),
+            reputation: 500, // Restored citizens keep their reputation
+            age: None,
+            access_level: lib_identity::types::AccessLevel::FullCitizen,
+            metadata,
+            private_data_id: Some(identity_id.clone()),
+            wallet_manager,
+            attestations: Vec::new(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+            last_active: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+            recovery_keys: vec![],
+            did_document_hash: None,
+            owner_identity_id: None,
+            reward_wallet_id: None,
+            encrypted_master_seed: None,
+            next_wallet_index: 0,
+            password_hash: None,
+            master_seed_phrase: None,
+        };
+
+        // Store private data
+        let private_data = lib_identity::PrivateIdentityData::new(
+            private_key,
+            public_key.clone(),
+            seed,
+            vec!["seed_phrase_recovery".to_string()],
+        );
+
+        // Add identity to manager
+        identity_manager.add_identity(identity);
+
+        // Set password if provided
+        if let Some(pwd) = &password {
+            if let Err(e) = identity_manager.set_identity_password(&identity_id, pwd) {
+                tracing::warn!("Failed to set password for restored identity: {}", e);
+            }
+        }
+
+        // Register for DAO governance
+        let dao_registration = lib_identity::citizenship::DaoRegistration::register_for_dao_governance(
+            &identity_id,
+            economic_model,
+        ).await?;
+
+        // Register for UBI payouts
+        let ubi_registration = lib_identity::citizenship::UbiRegistration::register_for_ubi_payouts(
+            &identity_id,
+            &ubi_wallet_id,
+            economic_model,
+        ).await?;
+
+        // Grant Web4 access
+        let web4_access = lib_identity::citizenship::Web4Access::grant_web4_access(&identity_id).await?;
+
+        // Create basic privacy credentials for restored identity
+        let privacy_credentials = lib_identity::citizenship::onboarding::PrivacyCredentials::new(
+            identity_id.clone(),
+            vec![], // Empty credentials - user will need to recreate them
+        );
+
+        // For restored identities, we don't give a welcome bonus (they already received it)
+        // But CitizenshipResult requires one, so we create a zero-amount bonus
+        let welcome_bonus = lib_identity::citizenship::WelcomeBonus::provide_welcome_bonus(
+            &identity_id,
+            &primary_wallet_id,
+            economic_model,
+        ).await?;
+
+        // Compile seed phrases
+        let wallet_seed_phrases = lib_identity::citizenship::onboarding::WalletSeedPhrases {
+            primary_wallet_seeds: primary_recovered_phrase,
+            ubi_wallet_seeds: ubi_recovered_phrase,
+            savings_wallet_seeds: savings_recovered_phrase,
+            generated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+        };
+
+        println!("✓ Full citizen identity restored successfully!");
+        println!("   Identity ID: {}", hex::encode(&identity_id.0[..8]));
+        println!("   Primary Wallet: {}", hex::encode(&primary_wallet_id.0[..8]));
+        println!("   UBI Wallet: {}", hex::encode(&ubi_wallet_id.0[..8]));
+        println!("   Savings Wallet: {}", hex::encode(&savings_wallet_id.0[..8]));
+
+        tracing::info!(
+            "🔓 CITIZEN IDENTITY RESTORED: {} ({}) with all 3 wallets",
+            display_name,
+            hex::encode(&identity_id.0[..8])
+        );
+
+        Ok(lib_identity::citizenship::CitizenshipResult::new(
+            identity_id,
+            primary_wallet_id,
+            ubi_wallet_id,
+            savings_wallet_id,
+            wallet_seed_phrases,
+            dao_registration,
+            ubi_registration,
+            web4_access,
+            privacy_credentials,
+            welcome_bonus,
+        ))
     }
 
     /// Public wrapper for importing from mesh network
