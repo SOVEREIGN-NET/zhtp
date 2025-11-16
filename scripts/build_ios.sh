@@ -34,28 +34,28 @@ echo ""
 
 # Check if running on macOS
 if [[ "$OSTYPE" != "darwin"* ]]; then
-    echo -e "${RED}❌ This script must be run on macOS with Xcode installed${NC}"
+    echo -e "${RED} This script must be run on macOS with Xcode installed${NC}"
     exit 1
 fi
 
 # Check if Rust is installed
 if ! command -v cargo &> /dev/null; then
-    echo -e "${RED}❌ Rust is not installed. Install from https://rustup.rs${NC}"
+    echo -e "${RED} Rust is not installed. Install from https://rustup.rs${NC}"
     exit 1
 fi
 
 # Check if Xcode is installed
 if ! command -v xcodebuild &> /dev/null; then
-    echo -e "${RED}❌ Xcode is not installed${NC}"
+    echo -e "${RED} Xcode is not installed${NC}"
     echo -e "   Install from: https://developer.apple.com/xcode/"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Xcode found: $(xcodebuild -version | head -n 1)${NC}"
+echo -e "${GREEN} Xcode found: $(xcodebuild -version | head -n 1)${NC}"
 
 # Add iOS targets if not installed
 echo ""
-echo -e "${BLUE}📦 Checking Rust iOS targets...${NC}"
+echo -e "${BLUE} Checking Rust iOS targets...${NC}"
 TARGETS=(
     "aarch64-apple-ios"          # Device (ARM64)
     "aarch64-apple-ios-sim"      # Simulator (Apple Silicon)
@@ -64,7 +64,7 @@ TARGETS=(
 
 for target in "${TARGETS[@]}"; do
     if rustup target list | grep -q "$target (installed)"; then
-        echo -e "${GREEN}✓ $target already installed${NC}"
+        echo -e "${GREEN} $target already installed${NC}"
     else
         echo -e "${YELLOW}⚙ Installing $target...${NC}"
         rustup target add "$target"
@@ -96,42 +96,42 @@ echo -e "${BLUE}╚════════════════════�
 
 # iOS Device (ARM64)
 echo ""
-echo -e "${BLUE}🔨 Building for iOS device (aarch64-apple-ios)...${NC}"
+echo -e "${BLUE} Building for iOS device (aarch64-apple-ios)...${NC}"
 cargo build --target aarch64-apple-ios $BUILD_FLAG --features ios --lib
-echo -e "${GREEN}✓ iOS device build complete${NC}"
+echo -e "${GREEN} iOS device build complete${NC}"
 
 # iOS Simulator (Apple Silicon)
 echo ""
-echo -e "${BLUE}🔨 Building for iOS simulator ARM64 (aarch64-apple-ios-sim)...${NC}"
+echo -e "${BLUE} Building for iOS simulator ARM64 (aarch64-apple-ios-sim)...${NC}"
 cargo build --target aarch64-apple-ios-sim $BUILD_FLAG --features ios --lib
-echo -e "${GREEN}✓ iOS simulator ARM64 build complete${NC}"
+echo -e "${GREEN} iOS simulator ARM64 build complete${NC}"
 
 # iOS Simulator (Intel)
 echo ""
-echo -e "${BLUE}🔨 Building for iOS simulator x86_64 (x86_64-apple-ios)...${NC}"
+echo -e "${BLUE} Building for iOS simulator x86_64 (x86_64-apple-ios)...${NC}"
 cargo build --target x86_64-apple-ios $BUILD_FLAG --features ios --lib
-echo -e "${GREEN}✓ iOS simulator x86_64 build complete${NC}"
+echo -e "${GREEN} iOS simulator x86_64 build complete${NC}"
 
 # Create fat library for simulator (ARM64 + x86_64)
 echo ""
-echo -e "${BLUE}🔗 Creating universal simulator library...${NC}"
+echo -e "${BLUE} Creating universal simulator library...${NC}"
 mkdir -p "$OUTPUT_DIR/simulator"
 lipo -create \
     "$PROJECT_DIR/target/aarch64-apple-ios-sim/$PROFILE/lib${LIB_NAME}.a" \
     "$PROJECT_DIR/target/x86_64-apple-ios/$PROFILE/lib${LIB_NAME}.a" \
     -output "$OUTPUT_DIR/simulator/lib${LIB_NAME}.a"
-echo -e "${GREEN}✓ Universal simulator library created${NC}"
+echo -e "${GREEN} Universal simulator library created${NC}"
 
 # Copy device library
 echo ""
-echo -e "${BLUE}📋 Copying device library...${NC}"
+echo -e "${BLUE} Copying device library...${NC}"
 mkdir -p "$OUTPUT_DIR/device"
 cp "$PROJECT_DIR/target/aarch64-apple-ios/$PROFILE/lib${LIB_NAME}.a" "$OUTPUT_DIR/device/"
-echo -e "${GREEN}✓ Device library copied${NC}"
+echo -e "${GREEN} Device library copied${NC}"
 
 # Generate C header file
 echo ""
-echo -e "${BLUE}📝 Generating C header file...${NC}"
+echo -e "${BLUE} Generating C header file...${NC}"
 cat > "$OUTPUT_DIR/zhtp.h" << 'EOF'
 #ifndef ZHTP_H
 #define ZHTP_H
@@ -160,7 +160,7 @@ void zhtp_on_bluetooth_data_received(const uint8_t* data, size_t data_len, const
 
 #endif // ZHTP_H
 EOF
-echo -e "${GREEN}✓ Header file generated${NC}"
+echo -e "${GREEN} Header file generated${NC}"
 
 # Create module map
 cat > "$OUTPUT_DIR/module.modulemap" << EOF
@@ -207,7 +207,7 @@ cat > "$DEVICE_FRAMEWORK/Info.plist" << EOF
 </dict>
 </plist>
 EOF
-echo -e "${GREEN}✓ Device framework created${NC}"
+echo -e "${GREEN} Device framework created${NC}"
 
 # Create framework for simulator
 echo ""
@@ -219,17 +219,17 @@ cp "$OUTPUT_DIR/simulator/lib${LIB_NAME}.a" "$SIMULATOR_FRAMEWORK/$FRAMEWORK_NAM
 cp "$OUTPUT_DIR/zhtp.h" "$SIMULATOR_FRAMEWORK/Headers/"
 cp "$OUTPUT_DIR/module.modulemap" "$SIMULATOR_FRAMEWORK/Modules/"
 cp "$DEVICE_FRAMEWORK/Info.plist" "$SIMULATOR_FRAMEWORK/"
-echo -e "${GREEN}✓ Simulator framework created${NC}"
+echo -e "${GREEN} Simulator framework created${NC}"
 
 # Create XCFramework
 echo ""
-echo -e "${BLUE}📦 Creating XCFramework...${NC}"
+echo -e "${BLUE} Creating XCFramework...${NC}"
 XCFRAMEWORK="$OUTPUT_DIR/$FRAMEWORK_NAME.xcframework"
 xcodebuild -create-xcframework \
     -framework "$DEVICE_FRAMEWORK" \
     -framework "$SIMULATOR_FRAMEWORK" \
     -output "$XCFRAMEWORK"
-echo -e "${GREEN}✓ XCFramework created${NC}"
+echo -e "${GREEN} XCFramework created${NC}"
 
 # Clean up intermediate files
 echo ""
@@ -254,7 +254,7 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║             iOS Build Completed Successfully!             ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${GREEN}📦 Output: $XCFRAMEWORK${NC}"
+echo -e "${GREEN} Output: $XCFRAMEWORK${NC}"
 echo ""
 echo -e "${BLUE}To use in Xcode:${NC}"
 echo ""
@@ -264,4 +264,4 @@ echo -e "  3. Set the framework to ${YELLOW}\"Embed & Sign\"${NC}"
 echo -e "  4. Add to your Swift code:"
 echo -e "     ${YELLOW}import $FRAMEWORK_NAME${NC}"
 echo ""
-echo -e "${GREEN}🎉 Done!${NC}"
+echo -e "${GREEN} Done!${NC}"

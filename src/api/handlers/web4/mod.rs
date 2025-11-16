@@ -23,11 +23,19 @@ pub struct Web4Handler {
     web4_manager: Arc<RwLock<Web4Manager>>,
     /// Wallet-content ownership manager
     wallet_content_manager: Arc<RwLock<lib_storage::WalletContentManager>>,
+    /// Identity manager for owner DID lookups
+    identity_manager: Arc<RwLock<lib_identity::IdentityManager>>,
+    /// Blockchain for UTXO transaction creation
+    blockchain: Arc<RwLock<lib_blockchain::Blockchain>>,
 }
 
 impl Web4Handler {
-    /// Create new Web4 API handler with existing storage system (avoids creating duplicates)
-    pub async fn new(storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>) -> ZhtpResult<Self> {
+    /// Create new Web4 API handler with existing storage system and identity manager
+    pub async fn new(
+        storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>,
+        identity_manager: Arc<RwLock<lib_identity::IdentityManager>>,
+        blockchain: Arc<RwLock<lib_blockchain::Blockchain>>,
+    ) -> ZhtpResult<Self> {
         info!("Initializing Web4 API handler with existing storage system");
         
         let web4_manager = lib_network::initialize_web4_system_with_storage(storage).await
@@ -41,6 +49,8 @@ impl Web4Handler {
         Ok(Self {
             web4_manager: Arc::new(RwLock::new(web4_manager)),
             wallet_content_manager: Arc::new(RwLock::new(wallet_content_manager)),
+            identity_manager,
+            blockchain,
         })
     }
 

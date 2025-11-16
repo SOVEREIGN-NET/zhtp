@@ -69,23 +69,49 @@ impl NetworkBlockchainProvider for ZhtpBlockchainProvider {
     async fn get_chain_proof(&self, up_to_height: u64) -> Result<ChainRecursiveProof> {
         debug!("Network layer requesting chain proof up to height {}", up_to_height);
         
-        // TODO: Implement actual chain proof generation
-        // This requires:
-        // 1. BlockAggregatedProof for each block (generated during consensus)
-        // 2. Previous ChainRecursiveProof (from last checkpoint)
-        // 3. RecursiveProofAggregator to combine them
-        //
-        // For now, return a placeholder error since:
-        // - Edge nodes never generate proofs (they only verify)
-        // - Full nodes/validators should use consensus-generated proofs
-        // - This is called by message handlers when responding to BootstrapProofRequest
+        let blockchain = get_global_blockchain().await?;
+        let mut blockchain_lock = blockchain.write().await;
         
-        warn!("Chain proof generation not yet implemented (height {})", up_to_height);
-        warn!("Note: Only validators generate proofs; edge nodes only verify");
+        // Get or initialize the proof aggregator
+        let aggregator_arc = blockchain_lock.get_proof_aggregator().await?;
+        let aggregator_lock = aggregator_arc.read().await;
+        
+        // Try to get the cached recursive proof at the requested height
+        if let Some(cached_proof) = aggregator_lock.get_recursive_proof(up_to_height) {
+            debug!("Found cached chain proof at height {}", up_to_height);
+            return Ok(cached_proof.clone());
+        }
+        
+        // If no proof at exact height, find the most recent proof <= up_to_height
+        // Check a few recent heights in case proofs aren't generated for every block
+        for offset in 0..10 {
+            if offset > up_to_height {
+                break;
+            }
+            let check_height = up_to_height - offset;
+            if let Some(cached_proof) = aggregator_lock.get_recursive_proof(check_height) {
+                debug!("Found cached chain proof at height {} (requested {})", check_height, up_to_height);
+                return Ok(cached_proof.clone());
+            }
+        }
+        
+        drop(aggregator_lock);
+        drop(blockchain_lock);
+        
+        // No cached proof found - need to generate one
+        // This is a simplified implementation that assumes proofs were generated during block creation
+        // In a production system, you'd want to:
+        // 1. Generate proofs asynchronously during block validation
+        // 2. Cache them at checkpoint intervals (every N blocks)
+        // 3. Use consensus-generated proofs from validators
+        
+        warn!("No cached chain proof found for height {} - blockchain sync coordination may be limited", up_to_height);
+        warn!("Note: Proofs should be generated during block validation/consensus");
         
         Err(anyhow::anyhow!(
-            "Chain proof generation requires BlockAggregatedProof from consensus. \
-             Edge nodes should request proofs from validators, not generate them."
+            "Chain proof not available at height {}. Proofs are generated during consensus. \
+             Edge nodes should request proofs from validators that have completed proof generation.",
+            up_to_height
         ))
     }
 

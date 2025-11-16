@@ -238,7 +238,7 @@ Start the complete ZHTP orchestrator node with all services.
 ./zhtp.exe network status
 ```
 
-### ISP Bypass Status
+###  Status
 
 **Usage**:
 ```bash

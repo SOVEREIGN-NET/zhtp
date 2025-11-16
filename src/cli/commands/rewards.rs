@@ -35,20 +35,20 @@ async fn show_reward_status(orchestrator: &RuntimeOrchestrator) -> Result<()> {
     // Get reward config from node config
     let config = &orchestrator.get_config().rewards_config;
     
-    println!("🎯 Global Configuration:");
-    println!("   Rewards Enabled:      {}", if config.enabled { "✅ YES" } else { "❌ NO" });
-    println!("   Auto-Claim:           {}", if config.auto_claim { "✅ YES" } else { "❌ NO" });
+    println!(" Global Configuration:");
+    println!("   Rewards Enabled:      {}", if config.enabled { " YES" } else { " NO" });
+    println!("   Auto-Claim:           {}", if config.auto_claim { " YES" } else { " NO" });
     println!("   Max Claims/Hour:      {}", config.max_claims_per_hour);
     println!("   Cooldown Period:      {} seconds", config.cooldown_period_secs);
     
-    println!("\n🔄 Routing Rewards:");
-    println!("   Status:               {}", if config.routing_rewards_enabled { "✅ ENABLED" } else { "⏸️  DISABLED" });
+    println!("\n Routing Rewards:");
+    println!("   Status:               {}", if config.routing_rewards_enabled { " ENABLED" } else { "  DISABLED" });
     println!("   Check Interval:       {} seconds", config.routing_check_interval_secs);
     println!("   Minimum Threshold:    {} ZHTP", config.routing_minimum_threshold);
     println!("   Max Batch Size:       {} ZHTP", config.routing_max_batch_size);
     
     println!("\n💾 Storage Rewards:");
-    println!("   Status:               {}", if config.storage_rewards_enabled { "✅ ENABLED" } else { "⏸️  DISABLED" });
+    println!("   Status:               {}", if config.storage_rewards_enabled { " ENABLED" } else { "  DISABLED" });
     println!("   Check Interval:       {} seconds", config.storage_check_interval_secs);
     println!("   Minimum Threshold:    {} ZHTP", config.storage_minimum_threshold);
     println!("   Max Batch Size:       {} ZHTP", config.storage_max_batch_size);
@@ -64,21 +64,21 @@ async fn show_reward_metrics(_orchestrator: &RuntimeOrchestrator) -> Result<()> 
     println!("║              Combined Reward Metrics                   ║");
     println!("╚════════════════════════════════════════════════════════╝\n");
     
-    println!("⚠️  Note: Metrics API requires reward orchestrator access");
+    println!("  Note: Metrics API requires reward orchestrator access");
     println!("   This feature requires runtime orchestrator methods to be implemented");
     
-    println!("\n📊 Routing Metrics:");
+    println!("\n Routing Metrics:");
     println!("   Pending Rewards:      (not yet implemented)");
     println!("   Total Bytes Routed:   (not yet implemented)");
     println!("   Total Messages:       (not yet implemented)");
     
-    println!("\n📊 Storage Metrics:");
+    println!("\n Storage Metrics:");
     println!("   Pending Rewards:      (not yet implemented)");
     println!("   Items Stored:         (not yet implemented)");
     println!("   Bytes Stored:         (not yet implemented)");
     println!("   Retrievals Served:    (not yet implemented)");
     
-    println!("\n💰 Total Pending:");
+    println!("\n Total Pending:");
     println!("   Combined:             (not yet implemented)");
     
     println!("\n╚════════════════════════════════════════════════════════╝\n");
@@ -92,7 +92,7 @@ async fn show_routing_rewards(_orchestrator: &RuntimeOrchestrator) -> Result<()>
     println!("║              Routing Reward Details                    ║");
     println!("╚════════════════════════════════════════════════════════╝\n");
     
-    println!("🔄 Routing Contributions:");
+    println!(" Routing Contributions:");
     println!("   Status:               Active");
     println!("   Messages Routed:      (requires mesh server stats)");
     println!("   Bytes Routed:         (requires mesh server stats)");
@@ -103,7 +103,7 @@ async fn show_routing_rewards(_orchestrator: &RuntimeOrchestrator) -> Result<()>
     println!("   Last Check:           (requires orchestrator query)");
     println!("   Next Check:           (requires orchestrator query)");
     
-    println!("\n💰 Reward History:");
+    println!("\n Reward History:");
     println!("   Total Claims:         (requires blockchain query)");
     println!("   Total Earned:         (requires blockchain query)");
     println!("   Last Claim:           (requires blockchain query)");
@@ -132,7 +132,7 @@ async fn show_storage_rewards(_orchestrator: &RuntimeOrchestrator) -> Result<()>
     println!("   Last Check:           (requires orchestrator query)");
     println!("   Next Check:           (requires orchestrator query)");
     
-    println!("\n💰 Reward History:");
+    println!("\n Reward History:");
     println!("   Total Claims:         (requires blockchain query)");
     println!("   Total Earned:         (requires blockchain query)");
     println!("   Last Claim:           (requires blockchain query)");
@@ -150,13 +150,13 @@ async fn show_reward_config(orchestrator: &RuntimeOrchestrator) -> Result<()> {
     
     let config = &orchestrator.get_config().rewards_config;
     
-    println!("📋 Global Settings:");
+    println!(" Global Settings:");
     println!("   enabled:                    {}", config.enabled);
     println!("   auto_claim:                 {}", config.auto_claim);
     println!("   max_claims_per_hour:        {}", config.max_claims_per_hour);
     println!("   cooldown_period_secs:       {}", config.cooldown_period_secs);
     
-    println!("\n🔄 Routing Configuration:");
+    println!("\n Routing Configuration:");
     println!("   routing_rewards_enabled:    {}", config.routing_rewards_enabled);
     println!("   routing_check_interval:     {}s", config.routing_check_interval_secs);
     println!("   routing_minimum_threshold:  {} ZHTP", config.routing_minimum_threshold);

@@ -286,7 +286,7 @@ impl RewardOrchestrator {
     /// Returns immediately if processors are already running.
     pub async fn start_all(&self) -> Result<()> {
         info!("═══════════════════════════════════════════════════════");
-        info!("🚀 Starting Unified Reward Orchestrator");
+        info!(" Starting Unified Reward Orchestrator");
         info!("═══════════════════════════════════════════════════════");
         info!("   Routing rewards: {}", if self.config.enable_routing_rewards { "ENABLED" } else { "DISABLED" });
         info!("   Storage rewards: {}", if self.config.enable_storage_rewards { "ENABLED" } else { "DISABLED" });
@@ -301,11 +301,11 @@ impl RewardOrchestrator {
             } else {
                 let handle = self.routing_processor.clone().start();
                 *self.routing_handle.write().await = Some(handle);
-                info!("✅ Routing reward processor started");
+                info!(" Routing reward processor started");
                 started_count += 1;
             }
         } else {
-            info!("⏭️  Routing rewards disabled");
+            info!("  Routing rewards disabled");
         }
         
         // Start storage processor if enabled
@@ -315,15 +315,15 @@ impl RewardOrchestrator {
             } else {
                 let handle = self.storage_processor.clone().start();
                 *self.storage_handle.write().await = Some(handle);
-                info!("✅ Storage reward processor started");
+                info!(" Storage reward processor started");
                 started_count += 1;
             }
         } else {
-            info!("⏭️  Storage rewards disabled");
+            info!("  Storage rewards disabled");
         }
         
         info!("═══════════════════════════════════════════════════════");
-        info!("🎉 Reward Orchestrator Started: {} processor(s) active", started_count);
+        info!(" Reward Orchestrator Started: {} processor(s) active", started_count);
         info!("═══════════════════════════════════════════════════════");
         
         Ok(())
@@ -351,7 +351,7 @@ impl RewardOrchestrator {
             stopped_count += 1;
         }
         
-        info!("✅ Reward orchestrator stopped: {} processor(s) terminated", stopped_count);
+        info!(" Reward orchestrator stopped: {} processor(s) terminated", stopped_count);
         Ok(())
     }
     
@@ -425,7 +425,7 @@ impl RewardOrchestrator {
     pub async fn record_claim(&self, processor_id: &str) {
         let mut rate_limiter = self.rate_limiter.write().await;
         rate_limiter.record_claim(processor_id);
-        info!("📊 Rate limit: Claim recorded for {}", processor_id);
+        info!(" Rate limit: Claim recorded for {}", processor_id);
     }
     
     /// Get rate limit statistics for a processor

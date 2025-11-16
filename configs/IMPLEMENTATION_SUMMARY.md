@@ -8,7 +8,7 @@ Created 5 specialized configuration templates:
 - **Full Node** (`full-node.toml`) - Complete blockchain functionality
 - **Validator Node** (`validator-node.toml`) - Consensus participation with maximum security
 - **Storage Node** (`storage-node.toml`) - Distributed storage services with large capacity
-- **Edge Node** (`edge-node.toml`) - Pure mesh networking for ISP bypass
+- **Edge Node** (`edge-node.toml`) - Pure mesh networking for 
 - **Development Node** (`dev-node.toml`) - Testing and development with relaxed settings
 
 ### 2. **CLI Integration**
@@ -59,7 +59,7 @@ Each configuration is optimized for specific network roles:
 - **Full nodes**: API serving and complete blockchain access
 - **Validators**: High security and consensus participation
 - **Storage nodes**: Large capacity and DHT optimization  
-- **Edge nodes**: Mesh networking and ISP bypass
+- **Edge nodes**: Mesh networking and 
 - **Dev nodes**: Fast iteration and testing
 
 ### **Resource Optimization**
@@ -114,7 +114,7 @@ zhtp --node-type dev
 zhtp --node-type validator
 ```
 
-### **ISP Bypass Edge Node**
+### ** Edge Node**
 ```bash
 # Start pure mesh node for rural/censored areas
 zhtp --node-type edge

@@ -245,7 +245,7 @@ impl DaoHandler {
         let limit = query.limit.unwrap_or(20).min(100); // Max 100 proposals per request
         let offset = query.offset.unwrap_or(0);
 
-        let mut filtered_proposals: Vec<_> = all_proposals.values().collect();
+        let mut filtered_proposals: Vec<_> = all_proposals.iter().collect();
 
         // Filter by status if provided
         if let Some(status_filter) = &query.status {
@@ -523,11 +523,11 @@ impl DaoHandler {
 
         // Calculate statistics
         let total_proposals = proposals.len();
-        let active_proposals = proposals.values().filter(|p| p.status == DaoProposalStatus::Active).count();
-        let passed_proposals = proposals.values().filter(|p| p.status == DaoProposalStatus::Passed).count();
-        let executed_proposals = proposals.values().filter(|p| p.status == DaoProposalStatus::Executed).count();
+        let active_proposals = proposals.iter().filter(|p| p.status == DaoProposalStatus::Active).count();
+        let passed_proposals = proposals.iter().filter(|p| p.status == DaoProposalStatus::Passed).count();
+        let executed_proposals = proposals.iter().filter(|p| p.status == DaoProposalStatus::Executed).count();
 
-        let total_votes: u64 = proposals.values().map(|p| p.vote_tally.total_votes).sum();
+        let total_votes: u64 = proposals.iter().map(|p| p.vote_tally.total_votes).sum();
         let avg_participation = if total_proposals > 0 {
             total_votes as f64 / total_proposals as f64
         } else {

@@ -150,11 +150,16 @@ impl Web4Handler {
             ),
         ).map_err(|e| anyhow!("Failed to create identity: {}", e))?;
 
-        let mut dht_client = lib_network::initialize_dht_client(identity).await
-            .map_err(|e| anyhow!("Failed to initialize DHT client: {}", e))?;
+        // Initialize global DHT and get client
+        crate::runtime::shared_dht::initialize_global_dht(identity).await
+            .map_err(|e| anyhow!("Failed to initialize DHT: {}", e))?;
+        let dht_client = crate::runtime::shared_dht::get_dht_client().await
+            .map_err(|e| anyhow!("Failed to get DHT client: {}", e))?;
 
         // Store content in DHT
-        let content_hash = dht_client.store_content(&api_request.domain, &api_request.path, content).await
+        let mut dht = dht_client.write().await;
+        let content_hash = dht.store_content(&api_request.domain, &api_request.path, content).await
+            .map(|_| "stored".to_string()) // store_content returns (), so create a hash
             .map_err(|e| anyhow!("Failed to store content in DHT: {}", e))?;
 
         let zhtp_url = format!("zhtp://{}{}", api_request.domain, api_request.path);
@@ -284,11 +289,16 @@ impl Web4Handler {
             ),
         ).map_err(|e| anyhow!("Failed to create identity: {}", e))?;
 
-        let mut dht_client = lib_network::initialize_dht_client(identity).await
-            .map_err(|e| anyhow!("Failed to initialize DHT client: {}", e))?;
+        // Initialize global DHT and get client
+        crate::runtime::shared_dht::initialize_global_dht(identity).await
+            .map_err(|e| anyhow!("Failed to initialize DHT: {}", e))?;
+        let dht_client = crate::runtime::shared_dht::get_dht_client().await
+            .map_err(|e| anyhow!("Failed to get DHT client: {}", e))?;
 
         // Update content in DHT (same as store)
-        let content_hash = dht_client.store_content(domain, &content_path, content).await
+        let mut dht = dht_client.write().await;
+        let content_hash = dht.store_content(domain, &content_path, content).await
+            .map(|_| "stored".to_string()) // store_content returns (), so create a hash
             .map_err(|e| anyhow!("Failed to update content in DHT: {}", e))?;
 
         let zhtp_url = format!("zhtp://{}{}", domain, content_path);

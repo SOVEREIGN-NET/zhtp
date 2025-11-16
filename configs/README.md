@@ -47,11 +47,11 @@ This directory contains pre-configured templates for different types of ZHTP nod
 **Resources**: 2GB RAM, 8 CPU threads, 10TB storage
 
 ### 4. **Edge Node** (`edge-node.toml`)
-**Purpose**: Mesh networking and ISP bypass
+**Purpose**: Mesh networking and 
 **Best for**: Mesh relays, rural connectivity, censorship resistance
 
 **Features**:
-- **Pure mesh mode (ISP bypass)**
+- **Pure mesh mode ()**
 - Mesh protocols only (Bluetooth, WiFi Direct, LoRaWAN)
 - Long-range relay support (satellite/LoRaWAN)
 - High routing reward multipliers (2x)
@@ -213,7 +213,7 @@ Before starting a node, validate your configuration:
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Full Node     │    │  Validator Node │    │  Storage Node   │
 │                 │    │                 │    │                 │
-│ • All Components│    │ • Consensus ✓   │    │ • Large Storage │
+│ • All Components│    │ • Consensus    │    │ • Large Storage │
 │ • API Endpoints │    │ • High Security │    │ • DHT Focus     │
 │ • Moderate Store│    │ • Block Creation│    │ • Data Serving  │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
@@ -224,7 +224,7 @@ Before starting a node, validate your configuration:
                     │   Edge Node     │
                     │                 │
                     │ • Pure Mesh     │
-                    │ • ISP Bypass    │
+                    │ •     │
                     │ • Low Resources │
                     │ • Rural Connect │
                     └─────────────────┘

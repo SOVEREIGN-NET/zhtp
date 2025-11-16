@@ -367,12 +367,12 @@ cargo build --target aarch64-linux-android --release --features android --lib
 
 ## Next Steps
 
-1. ✅ Build mobile libraries
-2. ✅ Integrate into mobile apps
-3. ⏭️ Create native UI (Jetpack Compose / SwiftUI)
-4. ⏭️ Implement native networking (WiFi Direct / MultipeerConnectivity)
-5. ⏭️ Test on physical devices
-6. ⏭️ Deploy via Firebase App Distribution
+1.  Build mobile libraries
+2.  Integrate into mobile apps
+3.  Create native UI (Jetpack Compose / SwiftUI)
+4.  Implement native networking (WiFi Direct / MultipeerConnectivity)
+5.  Test on physical devices
+6.  Deploy via Firebase App Distribution
 
 ## Resources
 

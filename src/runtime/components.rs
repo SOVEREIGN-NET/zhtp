@@ -29,7 +29,7 @@ use crate::config::aggregation::BootstrapValidator;
 /// Genesis validator for multi-node network initialization
 #[derive(Debug, Clone)]
 pub struct GenesisValidator {
-    /// Validator identity ID (DID hash)
+    /// Validator identity ID (DID hash) - should be USER identity, not node identity
     pub identity_id: lib_crypto::Hash,
     /// Initial stake amount  
     pub stake: u64,
@@ -41,6 +41,9 @@ pub struct GenesisValidator {
     pub endpoints: Vec<String>,
     /// Consensus public key
     pub consensus_key: Option<lib_crypto::PublicKey>,
+    /// Physical node device ID that runs validator operations (optional)
+    /// Allows tracking which node device performs operations for this USER identity validator
+    pub node_device_id: Option<lib_identity::IdentityId>,
 }
 
 impl From<BootstrapValidator> for GenesisValidator {
@@ -106,6 +109,7 @@ impl From<BootstrapValidator> for GenesisValidator {
             commission_rate: bootstrap.commission_rate,
             endpoints: bootstrap.endpoints,
             consensus_key,
+            node_device_id: None, // Not available from bootstrap config
         }
     }
 }
@@ -368,6 +372,10 @@ pub struct IdentityComponent {
     status: Arc<RwLock<ComponentStatus>>,
     start_time: Arc<RwLock<Option<Instant>>>,
     identity_manager: Arc<RwLock<Option<IdentityManager>>>,
+    // Store genesis identities to be registered when component starts (PUBLIC DATA ONLY)
+    genesis_identities: Arc<RwLock<Vec<lib_identity::ZhtpIdentity>>>,
+    // Store genesis private keys separately in secure memory (NEVER touches blockchain)
+    genesis_private_data: Arc<RwLock<Vec<(lib_identity::IdentityId, lib_identity::identity::PrivateIdentityData)>>>,
 }
 
 impl std::fmt::Debug for IdentityComponent {
@@ -376,6 +384,8 @@ impl std::fmt::Debug for IdentityComponent {
             .field("status", &"<RwLock<ComponentStatus>>")
             .field("start_time", &"<RwLock<Option<Instant>>>")
             .field("identity_manager", &"<RwLock<Option<IdentityManager>>>")
+            .field("genesis_identities", &"<RwLock<Vec<ZhtpIdentity>>>")
+            .field("genesis_private_data", &"<RwLock<Vec<(IdentityId, PrivateIdentityData)>>>")
             .finish()
     }
 }
@@ -386,7 +396,40 @@ impl IdentityComponent {
             status: Arc::new(RwLock::new(ComponentStatus::Stopped)),
             start_time: Arc::new(RwLock::new(None)),
             identity_manager: Arc::new(RwLock::new(None)),
+            genesis_identities: Arc::new(RwLock::new(Vec::new())),
+            genesis_private_data: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+    
+    /// Create a new identity component with pre-populated genesis identities (public data only)
+    pub fn new_with_identities(genesis_identities: Vec<lib_identity::ZhtpIdentity>) -> Self {
+        Self {
+            status: Arc::new(RwLock::new(ComponentStatus::Stopped)),
+            start_time: Arc::new(RwLock::new(None)),
+            identity_manager: Arc::new(RwLock::new(None)),
+            genesis_identities: Arc::new(RwLock::new(genesis_identities)),
+            genesis_private_data: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+    
+    /// Create Identity component with genesis identities AND private keys for transaction signing
+    /// Private keys are stored in secure memory ONLY - never written to blockchain
+    pub fn new_with_identities_and_private_data(
+        genesis_identities: Vec<lib_identity::ZhtpIdentity>,
+        genesis_private_data: Vec<(lib_identity::IdentityId, lib_identity::identity::PrivateIdentityData)>,
+    ) -> Self {
+        Self {
+            status: Arc::new(RwLock::new(ComponentStatus::Stopped)),
+            start_time: Arc::new(RwLock::new(None)),
+            identity_manager: Arc::new(RwLock::new(None)),
+            genesis_identities: Arc::new(RwLock::new(genesis_identities)),
+            genesis_private_data: Arc::new(RwLock::new(genesis_private_data)),
+        }
+    }
+    
+    /// Get the identity manager Arc (for runtime coordination)
+    pub fn get_identity_manager_arc(&self) -> Arc<RwLock<Option<IdentityManager>>> {
+        self.identity_manager.clone()
     }
 }
 
@@ -405,12 +448,68 @@ impl Component for IdentityComponent {
         
         *self.status.write().await = ComponentStatus::Starting;
         
-        // Initialize identity manager
-        let identity_manager = lib_identity::initialize_identity_system().await?;
+        // Check if we have genesis identities to register
+        let genesis_ids = self.genesis_identities.read().await.clone();
+        let genesis_private = self.genesis_private_data.read().await.clone();
+        
+        // Initialize identity manager with genesis identities AND private keys if available
+        let mut identity_manager = if genesis_ids.is_empty() {
+            info!("No genesis identities - initializing empty IdentityManager");
+            lib_identity::initialize_identity_system().await?
+        } else if genesis_private.is_empty() {
+            info!("  Initializing IdentityManager with {} genesis identities (PUBLIC DATA ONLY - no signing capability)", genesis_ids.len());
+            lib_identity::initialize_identity_system_with_identities(genesis_ids.clone()).await?
+        } else {
+            info!(" Initializing IdentityManager with {} genesis identities and {} private keys (FULL SIGNING CAPABILITY)", 
+                genesis_ids.len(), genesis_private.len());
+            
+            // Build the combined identity+private data vector
+            let mut identities_with_private: Vec<(lib_identity::ZhtpIdentity, lib_identity::identity::PrivateIdentityData)> = Vec::new();
+            
+            for identity in &genesis_ids {
+                // Find matching private data by identity ID
+                if let Some((_, private_data)) = genesis_private.iter().find(|(id, _)| id == &identity.id) {
+                    identities_with_private.push((identity.clone(), private_data.clone()));
+                    info!(" Loaded private key for identity: {} (type: {:?})", 
+                        hex::encode(&identity.id.0[..8]), identity.identity_type);
+                } else {
+                    warn!("  No private key found for identity: {} - signing will NOT work for this identity", 
+                        hex::encode(&identity.id.0[..8]));
+                }
+            }
+            
+            lib_identity::initialize_identity_system_with_identities_and_private_data(identities_with_private).await?
+        };
+        
+        // Fund genesis primary wallets with 5000 ZHTP welcome bonus
+        if !genesis_ids.is_empty() {
+            info!("Funding genesis primary wallets with 5000 ZHTP welcome bonus...");
+            for genesis_identity in &genesis_ids {
+                // Only fund Human identities (not Device identities)
+                if genesis_identity.identity_type == lib_identity::IdentityType::Human {
+                    // Get the primary wallet ID (first wallet in the list)
+                    let wallet_summaries = genesis_identity.wallet_manager.list_wallets();
+                    if let Some(_primary_wallet_summary) = wallet_summaries.first() {
+                        // Wallet funding is now handled via blockchain wallet_registry sync
+                        // The sync_wallet_balances method will update wallet balances from blockchain data
+                    }
+                }
+            }
+        }
+        
         info!("Identity management system initialized");
         info!("Ready for citizen onboarding and zero-knowledge identity verification");
         
-        *self.identity_manager.write().await = Some(identity_manager);
+        // CRITICAL: Wrap in Arc<RwLock> and register globally for shared access across components
+        let identity_manager_arc = Arc::new(RwLock::new(identity_manager));
+        
+        // Register globally so ProtocolsComponent can use the same instance
+        crate::runtime::set_global_identity_manager(identity_manager_arc).await?;
+        info!(" Identity manager registered globally for component access");
+        
+        // Note: We don't store locally in self.identity_manager anymore since it can't be cloned
+        // Components should access via the global provider
+        
         *self.start_time.write().await = Some(Instant::now());
         *self.status.write().await = ComponentStatus::Running;
         
@@ -810,7 +909,7 @@ impl NetworkComponent {
     pub async fn reset_routing_rewards(&self) -> Result<()> {
         if let Some(ref server) = *self.mesh_server.read().await {
             server.reset_reward_counter().await;
-            info!("✅ Routing rewards reset after successful claim");
+            info!(" Routing rewards reset after successful claim");
             Ok(())
         } else {
             Err(anyhow::anyhow!("Cannot reset rewards: mesh server not initialized"))
@@ -878,7 +977,7 @@ impl NetworkComponent {
     pub async fn reset_storage_rewards(&self) -> Result<()> {
         if let Some(ref server) = *self.mesh_server.read().await {
             server.reset_storage_reward_counter().await;
-            info!("✅ Storage rewards reset after successful claim");
+            info!(" Storage rewards reset after successful claim");
             Ok(())
         } else {
             Err(anyhow::anyhow!("Cannot reset storage rewards: mesh server not initialized"))
@@ -984,8 +1083,41 @@ impl BlockchainComponent {
     
     /// Set user wallet for genesis funding
     pub async fn set_user_wallet(&self, wallet: crate::runtime::did_startup::WalletStartupResult) {
-        let mut user_wallet = self.user_wallet.write().await;
-        *user_wallet = Some(wallet);
+        // Store wallet
+        let mut user_wallet_guard = self.user_wallet.write().await;
+        *user_wallet_guard = Some(wallet.clone());
+        drop(user_wallet_guard);
+        
+        // CRITICAL: Update controlled_nodes in blockchain identity registry
+        // This connects the node device identity to the user identity for consensus
+        let node_id_hex = hex::encode(&wallet.node_identity_id.0);
+        let user_did = format!("did:zhtp:{}", hex::encode(&wallet.user_identity.id.0));
+        
+        info!(" Updating controlled_nodes for user {} with node {}", 
+              &user_did[..40], &node_id_hex[..32]);
+        
+        // Get global blockchain and update identity registry
+        match crate::runtime::blockchain_provider::get_global_blockchain().await {
+            Ok(blockchain_arc) => {
+                let mut blockchain = blockchain_arc.write().await;
+                
+                // Find and update the user's identity entry in the registry
+                if let Some(identity_data) = blockchain.identity_registry.get_mut(&user_did) {
+                    if !identity_data.controlled_nodes.contains(&node_id_hex) {
+                        identity_data.controlled_nodes.push(node_id_hex.clone());
+                        info!(" Added node {} to user's controlled_nodes list", &node_id_hex[..32]);
+                        info!("   User now controls {} node(s)", identity_data.controlled_nodes.len());
+                    } else {
+                        info!("  Node {} already in controlled_nodes", &node_id_hex[..32]);
+                    }
+                } else {
+                    warn!("  User identity {} not found in blockchain registry - controlled_nodes not updated", user_did);
+                }
+            },
+            Err(e) => {
+                warn!("  Failed to get global blockchain: {} - controlled_nodes not updated", e);
+            }
+        }
     }
     
     /// Get the blockchain Arc for sharing with other components
@@ -1008,6 +1140,9 @@ impl BlockchainComponent {
         blockchain: &mut Blockchain,
         genesis_validators: Vec<GenesisValidator>,
         environment: &crate::config::Environment,
+        user_primary_wallet_id: Option<(lib_identity::wallets::WalletId, Vec<u8>)>, // (wallet_id, public_key)
+        user_identity_id: Option<lib_identity::IdentityId>, // Add user identity ID parameter
+        genesis_private_data: Vec<(lib_identity::IdentityId, lib_identity::identity::PrivateIdentityData)>, // Private key data
     ) -> Result<()> {
         info!("Creating genesis funding for multi-validator identity-based transaction system...");
         info!("Initializing {} genesis validators", genesis_validators.len());
@@ -1079,6 +1214,69 @@ impl BlockchainComponent {
             },
         ]);
         
+        // Add user primary wallet funding (welcome bonus: 5000 ZHTP)
+        if let Some((wallet_id, _wallet_public_key)) = user_primary_wallet_id.as_ref() {
+            let wallet_id_hex = hex::encode(&wallet_id.0[..8]);
+            info!(" Funding genesis user primary wallet: {} with 5000 ZHTP welcome bonus", wallet_id_hex);
+            
+            // CRITICAL: Get the FULL Dilithium2 public key from the identity's private data
+            // This is required for signature verification (1312 bytes, not 32-byte hash)
+            let identity_dilithium_pubkey = if let Some(user_id) = user_identity_id.as_ref() {
+                // Find the matching private data for this identity
+                if let Some(genesis_private) = genesis_private_data.iter()
+                    .find(|(id, _)| id.0 == user_id.0)
+                {
+                    // Extract the full Dilithium2 public key (1312 bytes)
+                    genesis_private.1.quantum_keypair.public_key.clone()
+                } else {
+                    error!(" CRITICAL: No private key found for user identity during genesis!");
+                    return Err(anyhow::anyhow!("Genesis identity missing private key data"));
+                }
+            } else {
+                error!(" CRITICAL: No user identity ID for genesis wallet!");
+                return Err(anyhow::anyhow!("Genesis wallet missing identity"));
+            };
+            
+            info!("   - Dilithium2 public key size: {} bytes", identity_dilithium_pubkey.len());
+            
+            // Create wallet funding UTXO (still uses 32-byte identity hash for recipient)
+            let identity_hash = user_identity_id.as_ref().unwrap().0.to_vec();
+            let wallet_output = TransactionOutput {
+                commitment: lib_blockchain::types::hash::blake3_hash(
+                    format!("user_wallet_commitment_{}_{}", wallet_id_hex, 5000).as_bytes()
+                ),
+                note: lib_blockchain::types::hash::blake3_hash(
+                    format!("user_wallet_note_{}", wallet_id_hex).as_bytes()
+                ),
+                recipient: PublicKey::new(identity_hash),
+            };
+            
+            genesis_outputs.push(wallet_output);
+            
+            // Register wallet in blockchain's wallet_registry with initial balance
+            // CRITICAL: Store the FULL Dilithium2 public key for signature verification
+            let wallet_data = lib_blockchain::transaction::WalletTransactionData {
+                wallet_id: lib_blockchain::Hash::from_slice(&wallet_id.0),
+                wallet_type: "Primary".to_string(),
+                wallet_name: "Primary Wallet".to_string(),
+                alias: None,
+                public_key: identity_dilithium_pubkey.clone(), // Full 1312-byte Dilithium2 public key
+                owner_identity_id: user_identity_id.as_ref().map(|id| lib_blockchain::Hash::from_slice(&id.0)),
+                seed_commitment: lib_blockchain::types::hash::blake3_hash(b"genesis_wallet_seed"),
+                created_at: 1730419200, // Genesis timestamp
+                registration_fee: 0,
+                capabilities: 0xFFFFFFFF, // Full capabilities
+                initial_balance: 5000, // 5000 ZHTP welcome bonus
+            };
+            
+            blockchain.wallet_registry.insert(hex::encode(&wallet_id.0), wallet_data);
+            
+            info!(" Genesis user wallet funded and registered: {} ZHTP", 5000);
+            info!("   - Wallet ID: {}", hex::encode(&wallet_id.0));
+            info!("   - Owner Identity ID: {}", hex::encode(&user_identity_id.as_ref().unwrap().0));
+            info!("   - Dilithium2 Public Key (first 16 bytes): {}", hex::encode(&identity_dilithium_pubkey[..16]));
+        }
+        
         // Create genesis funding transaction signed by first validator (network bootstrap)
         let genesis_signature = if let Some(first_validator) = genesis_validators.first() {
             let validator_id_hex = hex::encode(&first_validator.identity_id.0[..8]);
@@ -1105,6 +1303,9 @@ impl BlockchainComponent {
             wallet_data: None,
             identity_data: None,
             validator_data: None,
+            dao_proposal_data: None,
+            dao_vote_data: None,
+            dao_execution_data: None,
         };
         
         // Add genesis transaction to the genesis block
@@ -1139,52 +1340,122 @@ impl BlockchainComponent {
         info!("   - Total UTXO entries: {}", blockchain.utxo_set.len());
         
         // ========================================================================
-        // Register all validator identities in blockchain with proper transactions
+        // ARCHITECTURE NOTE: Validator registration moved AFTER USER identity registration
+        // This ensures the USER identity exists in blockchain.identity_registry before
+        // attempting to register them as a validator
         // ========================================================================
+        info!("  Validator registration will occur after USER identity is registered");
+        
+        // ========================================================================
+        // Register USER identity on blockchain (not just validators)
+        // ========================================================================
+        if let Some(user_id) = user_identity_id.as_ref() {
+            let user_did = format!("did:zhtp:{}", hex::encode(&user_id.0));
+            info!(" Registering USER identity on blockchain: {}", user_did);
+            
+            // Get the full Dilithium2 public key from private data
+            let user_dilithium_pubkey = if let Some(user_private) = genesis_private_data.iter()
+                .find(|(id, _)| id.0 == user_id.0)
+            {
+                user_private.1.quantum_keypair.public_key.clone()
+            } else {
+                warn!("  No private key found for user identity during genesis registration!");
+                vec![]
+            };
+            
+            // Collect node device IDs from genesis validators (nodes are controlled devices, not separate identities)
+            let controlled_node_ids: Vec<String> = genesis_validators.iter()
+                .filter_map(|v| v.node_device_id.as_ref().map(|nid| hex::encode(&nid.0)))
+                .collect();
+            
+            info!("   - User controls {} node device(s)", controlled_node_ids.len());
+            for (idx, node_id) in controlled_node_ids.iter().enumerate() {
+                info!("     Node {}: {}...", idx + 1, &node_id[..32]);
+            }
+            
+            let user_identity_data = lib_blockchain::transaction::core::IdentityTransactionData {
+                did: user_did.clone(),
+                display_name: "Genesis User".to_string(),
+                public_key: user_dilithium_pubkey, // Use full 1312-byte Dilithium2 key
+                ownership_proof: vec![],  // Empty for genesis/system transactions
+                identity_type: "human".to_string(),
+                did_document_hash: lib_blockchain::types::hash::blake3_hash(user_did.as_bytes()),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                registration_fee: 0,  // Genesis identity has no fee
+                dao_fee: 0,
+                controlled_nodes: controlled_node_ids, // Add node devices to USER's controlled list
+                owned_wallets: vec![hex::encode(&user_primary_wallet_id.as_ref().unwrap().0.0)],
+            };
+            
+            match blockchain.register_identity(user_identity_data) {
+                Ok(tx_hash) => {
+                    info!(" Genesis USER identity registered with transaction: {}", 
+                          hex::encode(tx_hash));
+                    info!("   - DID: {}", user_did);
+                    info!("   - Identity ID: {}", hex::encode(&user_id.0));
+                    info!("   - Identity type: Human");
+                }
+                Err(e) => {
+                    warn!("  User identity registration failed (may already exist): {}", e);
+                }
+            }
+        }
+        
+        // ========================================================================
+        // NOW register validators AFTER USER identity exists in blockchain
+        // ========================================================================
+        info!(" Registering validators in validator_registry (USER identity already registered)...");
         let mut registered_validators = 0;
         
         for (index, validator) in genesis_validators.iter().enumerate() {
             let validator_did = format!("did:zhtp:{}", hex::encode(&validator.identity_id.0));
             
-            // Create identity transaction data for each validator
-            // Genesis/system transactions don't require ownership proof (validation allows empty for system txs)
-            let validator_identity_data = lib_blockchain::transaction::core::IdentityTransactionData {
-                did: validator_did.clone(),
-                display_name: format!("Genesis Validator {}", index + 1),
-                public_key: validator.identity_id.as_bytes().to_vec(),
-                ownership_proof: vec![],  // Empty for genesis/system transactions (bypasses validation)
-                identity_type: "validator".to_string(),
-                did_document_hash: lib_blockchain::types::hash::blake3_hash(validator_did.as_bytes()),
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                registration_fee: 0,  // Genesis identity has no fee (system transaction)
-                dao_fee: 0,
+            info!(" Registering validator {}: {}", index + 1, validator_did);
+            if let Some(node_id) = &validator.node_device_id {
+                info!("   - Node device: {}", hex::encode(&node_id.0[..16]));
+            }
+            
+            // Register as a validator in the validator_registry (USER identity now exists)
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            
+            let validator_info = lib_blockchain::blockchain::ValidatorInfo {
+                identity_id: validator_did.clone(),
+                stake: validator.stake,
+                storage_provided: validator.storage_provided,
+                consensus_key: validator.identity_id.as_bytes().to_vec(),
+                network_address: "127.0.0.1:9333".to_string(), // Genesis validator on local node
+                commission_rate: (validator.commission_rate.min(10000) / 100) as u8, // Convert basis points to percentage
+                status: "active".to_string(),
+                registered_at: now,
+                last_activity: now,
+                blocks_validated: 0,
+                slash_count: 0,
             };
             
-            // Register validator identity using proper method (creates transaction + adds to pending pool)
-            match blockchain.register_identity(validator_identity_data) {
-                Ok(tx_hash) => {
+            match blockchain.register_validator(validator_info) {
+                Ok(validator_tx_hash) => {
                     registered_validators += 1;
-                    info!("✅ Genesis validator {} registered with transaction: {}", 
-                          index + 1, hex::encode(tx_hash));
-                    info!("   - DID: {}", validator_did);
-                    info!("   - Identity ID: {}", hex::encode(&validator.identity_id.0[..16]));
+                    info!(" Genesis validator {} registered in validator_registry", index + 1);
+                    info!("   - Validator TX: {}", hex::encode(validator_tx_hash));
                     info!("   - Stake: {} ZHTP", validator.stake);
                     info!("   - Storage: {} GB", validator.storage_provided);
                     info!("   - Commission: {}.{}%", 
                           validator.commission_rate / 100, validator.commission_rate % 100);
                 }
                 Err(e) => {
-                    // If registration fails (e.g., already exists), just log warning but continue
-                    warn!("Validator {} identity registration failed (may already exist): {}", 
+                    warn!("  Failed to register validator {} in validator_registry: {}", 
                           index + 1, e);
                 }
             }
         }
         
-        info!("✅ Genesis validator identities registered: {}/{}", 
+        info!(" Validator registration complete: {}/{} validators registered", 
               registered_validators, genesis_validators.len());
         info!("   - Pending transactions: {}", blockchain.pending_transactions.len());
         info!("   - Identities in registry: {}", blockchain.identity_registry.len());
@@ -1205,7 +1476,7 @@ impl Component for BlockchainComponent {
 
     async fn start(&self) -> Result<()> {
         info!("Starting blockchain component with shared blockchain service...");
-        info!("🌐 Network Environment: {}", self.environment);
+        info!(" Network Environment: {}", self.environment);
         
         *self.status.write().await = ComponentStatus::Starting;
         
@@ -1222,7 +1493,7 @@ impl Component for BlockchainComponent {
             Err(_) => {
                 // If no global blockchain exists, check if we should create genesis or join existing network
                 if self.joined_existing_network {
-                    info!("✅ Joining existing network - skipping genesis creation");
+                    info!(" Joining existing network - skipping genesis creation");
                     info!("   Blockchain will sync from network peers after API server starts");
                     // Will be initialized by RuntimeOrchestrator with proper configuration
                 } else {
@@ -1234,26 +1505,21 @@ impl Component for BlockchainComponent {
         
         // Start mining loop with funded transactions and consensus coordination
         let blockchain_clone = self.blockchain.clone();
-        let validator_manager_clone = {
-            let vm_guard = self.validator_manager.read().await;
-            vm_guard.clone()
-        };
-        let node_identity_clone = {
-            let id_guard = self.node_identity.read().await;
-            id_guard.clone()
-        };
+        // Clone the Arc references (not the inner values) so mining loop can read updated values
+        let validator_manager_arc = self.validator_manager.clone();
+        let node_identity_arc = self.node_identity.clone();
         
         let mining_handle = tokio::spawn(async move {
-            info!("🚀 Mining task spawned, starting mining loop...");
-            Self::real_mining_loop(blockchain_clone, validator_manager_clone, node_identity_clone).await;
-            error!("❌ Mining loop exited unexpectedly!");
+            info!(" Mining task spawned, starting mining loop...");
+            Self::real_mining_loop(blockchain_clone, validator_manager_arc, node_identity_arc).await;
+            error!(" Mining loop exited unexpectedly!");
         });
         
         *self.mining_handle.write().await = Some(mining_handle);
         *self.start_time.write().await = Some(Instant::now());
         *self.status.write().await = ComponentStatus::Running;
         
-        info!("✅ Blockchain component started with shared blockchain service for {} network", self.environment);
+        info!(" Blockchain component started with shared blockchain service for {} network", self.environment);
         Ok(())
     }
 
@@ -1343,6 +1609,8 @@ impl Component for BlockchainComponent {
                                 created_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
                                 registration_fee: 0,
                                 dao_fee: 0,
+                                controlled_nodes: Vec::new(),
+                                owned_wallets: Vec::new(),
                             };
                             blockchain.identity_registry.insert(identity_key, identity_tx_data);
                             
@@ -1449,10 +1717,10 @@ impl Component for BlockchainComponent {
                     
                     info!("transactions added. Pending: {}", blockchain.pending_transactions.len());
                     
-                    // Try to mine a block if we have enough transactions
-                    if blockchain.pending_transactions.len() >= 2 {
-                        Self::mine_real_block(blockchain).await?;
-                    }
+                    // NOTE: Mining is handled by the consensus-coordinated mining loop (real_mining_loop)
+                    // which checks every 30 seconds and validates proposer selection before mining.
+                    // Do NOT mine immediately here as it bypasses consensus coordination.
+                    info!("💤 Transactions queued for mining - will be picked up by consensus mining loop");
                 }
                 Ok(())
             }
@@ -1605,6 +1873,9 @@ impl BlockchainComponent {
             memo,
             identity_data: None,
             validator_data: None,
+            dao_proposal_data: None,
+            dao_vote_data: None,
+            dao_execution_data: None,
         })
     }
 
@@ -1648,6 +1919,9 @@ impl BlockchainComponent {
             identity_data: None,
             wallet_data: None,
             validator_data: None,
+            dao_proposal_data: None,
+            dao_vote_data: None,
+            dao_execution_data: None,
         };
         
         // Create signing hash using the exact same method as blockchain validation
@@ -1696,27 +1970,30 @@ impl BlockchainComponent {
             .map(|b| b.hash())
             .unwrap_or_default();
 
-        // Use easy consensus difficulty for system transaction blocks
-        let block_difficulty = if has_system_transactions {
-            info!("Using easy consensus difficulty for system transaction block");
-            lib_blockchain::types::Difficulty::from_bits(0x1fffffff) // Easy consensus difficulty
+        // Use blockchain's current difficulty (set at initialization based on environment)
+        let block_difficulty = blockchain.difficulty.clone();
+        
+        if has_system_transactions {
+            info!("Mining system transaction block with difficulty: {:#x}", block_difficulty.bits());
         } else {
-            info!("Using regular mining difficulty for normal transaction block");
-            blockchain.difficulty // Regular mining difficulty
-        };
-
-        info!("Block difficulty: {:#x}", block_difficulty.bits());
+            info!("Mining normal transaction block with difficulty: {:#x}", block_difficulty.bits());
+        }
 
         // Create the block using lib-blockchain methods
-        let new_block = lib_blockchain::block::creation::create_block(
+        let block = lib_blockchain::block::creation::create_block(
             transactions_for_block,
             previous_hash,
             blockchain.height + 1,
             block_difficulty, // Use appropriate difficulty
         )?;
 
-        // Add the block to the blockchain using validation
-        match blockchain.add_block(new_block.clone()) {
+        // Mine the block (compute valid nonce through Proof-of-Work)
+        info!("⛏️ Mining block with PoW (difficulty: {:#x})...", block_difficulty.bits());
+        let new_block = lib_blockchain::block::creation::mine_block(block, 10_000_000)?;
+        info!(" Block mined with nonce: {}", new_block.header.nonce);
+
+        // Add the block to the blockchain WITH proof generation
+        match blockchain.add_block_with_proof(new_block.clone()).await {
             Ok(()) => {
                 info!("BLOCK MINED SUCCESSFULLY!");
                 info!("Block Hash: {:?}", new_block.hash());
@@ -1739,23 +2016,27 @@ impl BlockchainComponent {
         Ok(())
     }
 
-    /// mining loop with actual blockchain operations using shared blockchain
+    /// Real mining loop with actual blockchain operations using shared blockchain
     /// and consensus coordination
     async fn real_mining_loop(
         blockchain: Arc<RwLock<Option<Blockchain>>>,
-        validator_manager: Option<Arc<RwLock<ValidatorManager>>>,
-        node_identity: Option<IdentityId>,
+        validator_manager_arc: Arc<RwLock<Option<Arc<RwLock<ValidatorManager>>>>>,
+        node_identity_arc: Arc<RwLock<Option<IdentityId>>>,
     ) {
+        // Give consensus component time to wire validator manager (typically takes ~100ms)
+        // This prevents the "mining without consensus coordination" warning on first check
+        info!(" Mining loop started - waiting 2 seconds for consensus to wire...");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        info!(" Starting mining checks every 30 seconds");
+        
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         let mut block_counter = 1u64;
         let mut consensus_round = 0u32;
         
-        info!("🔨 Mining loop started - checking every 30 seconds");
-        
         loop {
             debug!("⏰ Mining loop tick #{}", block_counter);
             interval.tick().await;
-            debug!("✅ Mining loop tick #{} completed, fetching blockchain...", block_counter);
+            debug!(" Mining loop tick #{} completed, fetching blockchain...", block_counter);
             
             // Use global blockchain provider to get the current blockchain state (same instance as API uses)
             match crate::runtime::blockchain_provider::get_global_blockchain().await {
@@ -1763,24 +2044,40 @@ impl BlockchainComponent {
                     let blockchain_guard = shared_blockchain.read().await;
                     let pending_count = blockchain_guard.pending_transactions.len();
                     let current_height = blockchain_guard.height;
+                    // Log Arc pointer for debugging shared state (BEFORE await to keep it Send-safe)
+                    let blockchain_ptr_addr = Arc::as_ptr(&shared_blockchain) as usize;
                     
-                    info!("Mining check #{} - Height: {}, Pending: {}, UTXOs: {}, Identities: {}", 
+                    info!("Mining check #{} - Height: {}, Pending: {}, UTXOs: {}, Identities: {} [ptr: 0x{:x}]", 
                         block_counter,
                         current_height, 
                         pending_count,
                         blockchain_guard.utxo_set.len(),
-                        blockchain_guard.identity_registry.len()
+                        blockchain_guard.identity_registry.len(),
+                        blockchain_ptr_addr
                     );
                     
                     // If we have pending transactions, check consensus before mining
                     if pending_count > 0 {
+                        // Read current validator_manager and node_identity from component fields
+                        // (These get set during wire_blockchain_to_consensus() after component starts)
+                        let validator_manager_opt = validator_manager_arc.read().await.clone();
+                        let node_identity_opt = node_identity_arc.read().await.clone();
+                        
                         // Check if consensus coordination is enabled
-                        let should_mine = if let (Some(ref vm), Some(ref node_id)) = (&validator_manager, &node_identity) {
+                        let should_mine = if let (Some(vm), Some(node_id)) = (validator_manager_opt, node_identity_opt) {
                             let vm_guard = vm.read().await;
                             
                             // Check if there are any active validators
                             let active_validators = vm_guard.get_active_validators();
-                            info!("🔍 CONSENSUS CHECK: {} active validators in validator manager", active_validators.len());
+                            info!(" CONSENSUS CHECK: {} active validators in validator manager", active_validators.len());
+                            
+                            // DEBUG: Print all validator identities
+                            for (idx, validator) in active_validators.iter().enumerate() {
+                                info!("   Validator {}: identity={} (stake: {})", 
+                                      idx + 1, 
+                                      hex::encode(&validator.identity.as_bytes()),
+                                      validator.stake);
+                            }
                             
                             if active_validators.is_empty() {
                                 // No validators yet - any node can mine (bootstrap phase)
@@ -1790,20 +2087,89 @@ impl BlockchainComponent {
                                 true
                             } else {
                                 // Select proposer using consensus
-                                info!("✅ CONSENSUS ACTIVE: {} validators registered", active_validators.len());
+                                info!(" CONSENSUS ACTIVE: {} validators registered", active_validators.len());
                                 let next_height = current_height + 1;
                                 if let Some(proposer) = vm_guard.select_proposer(next_height, consensus_round) {
-                                    let is_proposer = &proposer.identity == node_id;
+                                    // CRITICAL ARCHITECTURE:
+                                    // - Validators are USER DIDs (humans/orgs)
+                                    // - Nodes are DEVICE identities controlled by USER DIDs
+                                    // - node_id = NODE device IdentityId (e.g., fd6cb66f32ffb8bd)
+                                    // - Validator manager stores the original IdentityId Hash (NOT hashed DID string!)
+                                    // - proposer.identity = original IdentityId Hash from DID
+                                    //
+                                    // Algorithm:
+                                    // 1. Convert node_id to hex string
+                                    // 2. Scan identity_registry to find USER DID with this node in controlled_nodes
+                                    // 3. Extract identity bytes from USER DID
+                                    // 4. Compare with proposer.identity
+                                    
+                                    let node_id_hex = hex::encode(node_id.as_bytes());
+                                    let mut is_proposer = false;
+                                    
+                                    info!(" IDENTITY MATCHING: Looking for node '{}' in identity registry", node_id_hex);
+                                    info!(" IDENTITY MATCHING: Identity registry has {} entries", blockchain_guard.identity_registry.len());
+                                    info!(" IDENTITY MATCHING: Proposer identity = {}", hex::encode(&proposer.identity.as_bytes()));
+                                    
+                                    // Scan identity registry to find which USER controls this node
+                                    for (did_string, identity_data) in blockchain_guard.identity_registry.iter() {
+                                        let did_preview = if did_string.len() > 70 { &did_string[..70] } else { did_string };
+                                        info!(" IDENTITY MATCHING: Checking identity {} with {} controlled nodes", 
+                                              did_preview,
+                                              identity_data.controlled_nodes.len());
+                                        for (idx, controlled_node) in identity_data.controlled_nodes.iter().enumerate() {
+                                            info!("   Node {}: {} (comparing with node_id_hex: {}) - {}", 
+                                                  idx + 1, 
+                                                  controlled_node,
+                                                  node_id_hex,
+                                                  if controlled_node == &node_id_hex { " MATCH!" } else { " no match" });
+                                        }
+                                        
+                                        // Check if this USER identity's controlled_nodes contains our node
+                                        if identity_data.controlled_nodes.contains(&node_id_hex) {
+                                            info!(" FOUND MATCHING USER: This node is controlled by {}", did_preview);
+                                            // Found the USER who controls this node!
+                                            // Extract the hex part from DID and convert to Hash (don't hash the DID string!)
+                                            if let Some(identity_hex) = did_string.strip_prefix("did:zhtp:") {
+                                                if let Ok(identity_bytes) = hex::decode(identity_hex) {
+                                                    let user_identity_hash = lib_crypto::Hash::from_bytes(&identity_bytes[..32]);
+                                                    
+                                                    info!("    User identity hash: {}", hex::encode(&user_identity_hash.as_bytes()));
+                                                    info!("    Proposer identity: {}", hex::encode(&proposer.identity.as_bytes()));
+                                                    
+                                                    // Compare original identity Hash with proposer's identity
+                                                    if user_identity_hash == proposer.identity {
+                                                        is_proposer = true;
+                                                        info!("    Node owner is proposer: {}", &did_string[..32]);
+                                                        info!("      Node device ID: {}", &node_id_hex[..32]);
+                                                        info!("      Owner identity: {}", hex::encode(&user_identity_hash.as_bytes()[..8]));
+                                                        break;
+                                                    } else {
+                                                        info!("    User identity does NOT match proposer");
+                                                    }
+                                                } else {
+                                                    warn!("    Failed to decode identity hex from DID");
+                                                }
+                                            } else {
+                                                warn!("    DID format invalid: {}", did_string);
+                                            }
+                                        }
+                                    }
+                                    
+                                    if !is_proposer {
+                                        info!(" IDENTITY MATCHING FAILED: This node's owner is NOT the selected proposer");
+                                    }
+                                    
                                     if is_proposer {
-                                        info!("🎯 CONSENSUS: This node selected as block proposer for height {} (round {})", 
+                                        info!(" CONSENSUS: This node selected as block proposer for height {} (round {})", 
                                             next_height, consensus_round);
                                     } else {
-                                        info!("⏸️ CONSENSUS: Waiting - proposer is {:?} (round {})", 
+                                        info!(" CONSENSUS: Waiting - proposer is {:?} (round {})", 
                                             hex::encode(&proposer.identity.as_bytes()[..8]), consensus_round);
+                                        info!("   Our node: {}", &node_id_hex[..32]);
                                     }
                                     is_proposer
                                 } else {
-                                    warn!("⚠️ CONSENSUS: No proposer selected, falling back to permissionless mining");
+                                    warn!(" CONSENSUS: No proposer selected, falling back to permissionless mining");
                                     true
                                 }
                             }
@@ -1831,10 +2197,11 @@ impl BlockchainComponent {
                             }
                         } else {
                             // Not our turn - increment round for next iteration
+                            info!(" SKIPPING MINING: Not selected as proposer (round {})", consensus_round);
                             consensus_round = (consensus_round + 1) % 10; // Rotate through rounds
                         }
                     } else {
-                        debug!("No pending transactions to mine");
+                        info!(" MINING CHECK: No pending transactions (height={}, round={})", current_height, consensus_round);
                         consensus_round = 0; // Reset when no pending transactions
                     }
                 }
@@ -1874,9 +2241,17 @@ impl ConsensusComponent {
     pub fn new(environment: crate::config::Environment) -> Self {
         // Create ValidatorManager with development mode based on environment
         let development_mode = matches!(environment, crate::config::Environment::Development);
+        
+        // Adjust minimum stake based on environment
+        let min_stake = if development_mode {
+            1_000  // Dev: 1k ZHTP (20% of 5k welcome bonus - accessible for testing)
+        } else {
+            100_000_000  // Prod: 100M ZHTP for network security
+        };
+        
         let validator_manager = ValidatorManager::new_with_development_mode(
             100,  // max_validators: Support up to 100 validators
-            100_000_000,  // min_stake: 100 ZHTP minimum stake (storage is now optional)
+            min_stake,
             development_mode,
         );
         
@@ -1923,7 +2298,15 @@ impl ConsensusComponent {
         
         for validator_info in active_validators {
             // Convert string identity_id to Hash (IdentityId type in lib-consensus)
-            let identity_hash = lib_crypto::Hash::from_bytes(&lib_crypto::hashing::hash_blake3(validator_info.identity_id.as_bytes()));
+            // CRITICAL: validator_info.identity_id is in DID format "did:zhtp:hex"
+            // Extract the hex part and convert back to the original Hash (don't double-hash!)
+            let identity_hex = validator_info.identity_id.strip_prefix("did:zhtp:")
+                .ok_or_else(|| anyhow::anyhow!("Invalid DID format: {}", validator_info.identity_id))?;
+            
+            let identity_bytes = hex::decode(identity_hex)
+                .map_err(|e| anyhow::anyhow!("Failed to decode identity hex: {}", e))?;
+            
+            let identity_hash = lib_crypto::Hash::from_bytes(&identity_bytes[..32]);
             
             // Check if validator is already registered in consensus
             if validator_manager.get_validator(&identity_hash).is_some() {
@@ -1986,13 +2369,16 @@ impl Component for ConsensusComponent {
         
         *self.status.write().await = ComponentStatus::Starting;
         
-        // Initialize consensus engine with development mode based on environment
+        // Initialize consensus engine with development mode for testing
         let mut config = ConsensusConfig::default();
         
-        // Enable development mode for Development environment
+        // Enable development mode for Development environment (allows single validator testing)
         config.development_mode = matches!(self.environment, crate::config::Environment::Development);
         if config.development_mode {
-            info!("🧪 Development mode enabled - single validator consensus allowed");
+            info!(" Development mode enabled - single validator consensus allowed for testing");
+            info!("    Production deployment requires minimum 4 validators for BFT");
+        } else {
+            info!(" Production mode: Full consensus validation required (minimum 4 validators for BFT)");
         }
         
         let consensus_engine = lib_consensus::init_consensus(config)?;
@@ -2003,10 +2389,8 @@ impl Component for ConsensusComponent {
         
         *self.consensus_engine.write().await = Some(consensus_engine);
         
-        // Synchronize validators from blockchain if blockchain is set
-        if let Err(e) = self.sync_validators_from_blockchain().await {
-            warn!("Failed to sync validators from blockchain during startup: {}", e);
-        }
+        // NOTE: Validator sync happens AFTER blockchain is wired (see orchestrator startup)
+        // Don't sync here - blockchain reference not set yet!
         
         *self.start_time.write().await = Some(Instant::now());
         *self.status.write().await = ComponentStatus::Running;
@@ -2350,10 +2734,10 @@ impl Component for ProtocolsComponent {
         
         info!("Initializing backend components for unified server...");
         
-        // 🔗 Try to bootstrap blockchain from existing network peers first
+        //  Try to bootstrap blockchain from existing network peers first
         let blockchain = match try_bootstrap_blockchain(&Arc::new(RwLock::new(lib_blockchain::Blockchain::new()?)), &Arc::new(RwLock::new(lib_storage::UnifiedStorageSystem::new(create_default_storage_config()?).await?)), self.api_port, &self.environment).await {
             Ok(synced_blockchain) => {
-                info!("✅ Successfully bootstrapped blockchain from network peers");
+                info!(" Successfully bootstrapped blockchain from network peers");
                 info!("   Height: {}, UTXOs: {}, Identities: {}", 
                     synced_blockchain.height,
                     synced_blockchain.utxo_set.len(),
@@ -2365,7 +2749,7 @@ impl Component for ProtocolsComponent {
                     Ok(shared) => {
                         let mut blockchain_guard = shared.write().await;
                         *blockchain_guard = synced_blockchain.clone();
-                        info!("📡 Updated global blockchain instance with synced state");
+                        info!(" Updated global blockchain instance with synced state");
                         drop(blockchain_guard);
                         shared
                     }
@@ -2380,12 +2764,12 @@ impl Component for ProtocolsComponent {
                 shared_blockchain
             }
             Err(e) => {
-                info!("ℹ️  Could not bootstrap from peers ({}), checking for shared blockchain", e);
+                info!("  Could not bootstrap from peers ({}), checking for shared blockchain", e);
                 // ProtocolsComponent should NOT create genesis - that's BlockchainComponent's job!
                 // Wait for BlockchainComponent to initialize the global blockchain with proper genesis funding
                 match crate::runtime::blockchain_provider::get_global_blockchain().await {
                     Ok(shared_blockchain) => {
-                        info!("📡 Using existing global blockchain instance from BlockchainComponent");
+                        info!(" Using existing global blockchain instance from BlockchainComponent");
                         shared_blockchain
                     }
                     Err(_) => {
@@ -2397,7 +2781,7 @@ impl Component for ProtocolsComponent {
                             attempts += 1;
                             
                             if let Ok(shared_blockchain) = crate::runtime::blockchain_provider::get_global_blockchain().await {
-                                info!("✅ Global blockchain initialized by BlockchainComponent (waited {} ms)", attempts * 500);
+                                info!(" Global blockchain initialized by BlockchainComponent (waited {} ms)", attempts * 500);
                                 break shared_blockchain;
                             }
                             
@@ -2410,11 +2794,33 @@ impl Component for ProtocolsComponent {
             }
         };
         
-        // Use shared instances instead of creating new ones to prevent duplicate initialization
-        // Identity manager - use a minimal instance for protocols (not full init)
-        let identity_manager = Arc::new(RwLock::new(
-            lib_identity::IdentityManager::new() // Use constructor instead of full init
-        ));
+        // CRITICAL: Use the shared IdentityManager from IdentityComponent (with genesis identities)
+        // instead of creating a new empty one
+        info!(" Getting shared IdentityManager from IdentityComponent...");
+        let identity_manager = match crate::runtime::get_global_identity_manager().await {
+            Ok(shared_identity_manager) => {
+                info!(" Using shared IdentityManager with genesis identities");
+                shared_identity_manager
+            }
+            Err(_) => {
+                // IdentityComponent hasn't started yet - wait for it with timeout
+                info!("⏳ Waiting for IdentityComponent to initialize IdentityManager (up to 30 seconds)...");
+                let mut attempts = 0;
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    attempts += 1;
+                    
+                    if let Ok(shared_identity_manager) = crate::runtime::get_global_identity_manager().await {
+                        info!(" IdentityManager initialized by IdentityComponent (waited {} ms)", attempts * 500);
+                        break shared_identity_manager;
+                    }
+                    
+                    if attempts >= 60 {  // 30 seconds
+                        return Err(anyhow::anyhow!("Timeout waiting for IdentityComponent to initialize IdentityManager"));
+                    }
+                }
+            }
+        };
         
         // Initialize economic model (lightweight initialization)
         let economic_model = Arc::new(RwLock::new(
@@ -2445,83 +2851,48 @@ impl Component for ProtocolsComponent {
         // ========================================================================
         // Initialize blockchain provider for network layer
         // ========================================================================
-        info!("🔗 Setting up blockchain provider for network layer...");
+        info!(" Setting up blockchain provider for network layer...");
         let blockchain_provider = Arc::new(crate::runtime::network_blockchain_provider::ZhtpBlockchainProvider::new());
         unified_server.set_blockchain_provider(blockchain_provider).await;
-        info!("✅ Blockchain provider configured for network message handlers");
+        info!(" Blockchain provider configured for network message handlers");
         
         // ========================================================================
         // Detect node type and initialize appropriate sync manager
         // ========================================================================
         if self.is_edge_node {
-            info!("🔷 Initializing Edge Node sync manager (headers-only)...");
+            info!(" Initializing Edge Node sync manager (headers-only)...");
             let edge_sync_manager = Arc::new(lib_network::EdgeNodeSyncManager::new(500)); // 500 header capacity
             unified_server.set_edge_sync_manager(edge_sync_manager).await;
-            info!("✅ Edge node sync manager initialized");
+            info!(" Edge node sync manager initialized");
             info!("   - Header capacity: 500");
             info!("   - Storage: ~100 KB");
             info!("   - ZK proof verification only");
         } else {
-            info!("🔹 Using full blockchain sync (complete blocks)");
+            info!(" Using full blockchain sync (complete blocks)");
         }
         
         // Initialize ZHTP authentication manager with blockchain identity
         info!(" Initializing ZHTP authentication and relay protocols...");
         
-        // Load or create node identity for blockchain authentication (network-specific path)
-        let data_dir = self.environment.data_directory();
-        let node_identity_path = format!("{}/node_identity.json", data_dir);
-        let node_identity_path = std::path::Path::new(&node_identity_path);
+        // Note: Node identity for ZHTP authentication should be created separately
+        // For now, authentication is disabled - identities are managed by IdentityComponent
+        warn!("  ZHTP authentication using identity manager (no separate node identity file)");
         
-        if node_identity_path.exists() {
-            // Load existing node identity
-            info!(" Loading node identity from {}", node_identity_path.display());
-            match std::fs::read_to_string(node_identity_path) {
-                Ok(json_str) => {
-                    match serde_json::from_str::<lib_identity::ZhtpIdentity>(&json_str) {
-                        Ok(node_identity) => {
-                            // Convert Vec<u8> to PublicKey
-                            let blockchain_pubkey = lib_crypto::PublicKey::new(node_identity.public_key.clone());
-                            
-                            info!(" Node identity loaded: ID={}", hex::encode(&node_identity.id.as_bytes()[..8]));
-                            
-                            // Register the node identity with the identity manager so it's available for PeerAnnouncement signing
-                            {
-                                let mut mgr = identity_manager.write().await;
-                                mgr.add_identity(node_identity.clone());
-                                info!("✅ Node identity registered with identity manager for mesh signing");
-                                info!("   Identity count: {}", mgr.list_identities().len());
-                            }
-                            
-                            // Initialize authentication manager
-                            if let Err(e) = unified_server.initialize_auth_manager(blockchain_pubkey).await {
-                                warn!("Failed to initialize ZHTP auth manager: {}", e);
-                            } else {
-                                info!(" ZHTP authentication manager initialized");
-                            }
-                            
-                            // Initialize relay protocol
-                            if let Err(e) = unified_server.initialize_relay_protocol().await {
-                                warn!("Failed to initialize ZHTP relay protocol: {}", e);
-                            } else {
-                                info!(" ZHTP relay protocol initialized");
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse node identity: {}", e);
-                            warn!("  ZHTP authentication disabled - run 'zhtp identity create' first");
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to read node identity file: {}", e);
-                    warn!("  ZHTP authentication disabled - run 'zhtp identity create' first");
-                }
-            }
+        // Initialize relay protocol without node-specific identity
+        if let Err(e) = unified_server.initialize_relay_protocol().await {
+            warn!("Failed to initialize ZHTP relay protocol: {}", e);
         } else {
-            warn!("  No node identity found at data/node_identity.json");
-            info!("   Run 'zhtp identity create' to enable blockchain authentication");
-            info!("   Peers can still connect but won't be fully authenticated");
+            info!(" ZHTP relay protocol initialized");
+        }
+        
+        // Initialize WiFi Direct authentication with blockchain identity
+        info!(" Initializing WiFi Direct authentication...");
+        if let Err(e) = unified_server.initialize_wifi_direct_auth(identity_manager.clone()).await {
+            warn!("  Failed to initialize WiFi Direct authentication: {}", e);
+            warn!("   WiFi Direct will operate without ZHTP authentication");
+        } else {
+            info!(" WiFi Direct authentication initialized");
+            info!("    Only ZHTP nodes with blockchain identity can connect");
         }
         
         info!("Starting unified server on port 9333...");
@@ -2538,10 +2909,10 @@ impl Component for ProtocolsComponent {
         let api_port = self.api_port;
         tokio::spawn(async move {
             let mut rx = peer_discovery_rx;
-            info!("🔔 Peer discovery listener active - will trigger blockchain sync on peer discovery");
+            info!(" Peer discovery listener active - will trigger blockchain sync on peer discovery");
             
             while let Some(peer_addr_str) = rx.recv().await {
-                info!("🔔 Peer discovered post-startup: {} - establishing UDP mesh connection...", peer_addr_str);
+                info!(" Peer discovered post-startup: {} - establishing UDP mesh connection...", peer_addr_str);
                 
                 // Parse peer address
                 if let Ok(peer_addr) = peer_addr_str.parse::<SocketAddr>() {
@@ -2550,7 +2921,7 @@ impl Component for ProtocolsComponent {
                     if let Err(e) = unified_server_clone.establish_udp_connection(peer_addr).await {
                         warn!("Failed to establish UDP connection to {}: {}", peer_addr, e);
                     } else {
-                        info!("✅ UDP mesh connection established to {}", peer_addr);
+                        info!(" UDP mesh connection established to {}", peer_addr);
                         info!("   Blockchain sync will occur via UDP BlockchainRequest/BlockchainData messages");
                     }
                     
@@ -2592,7 +2963,7 @@ impl Component for ProtocolsComponent {
                 for peer_addr in &peers {
                     match try_bootstrap_blockchain_from_peer(&blockchain_sync, &storage_sync, peer_addr).await {
                         Ok(synced_blockchain) => {
-                            info!("🔄 Periodic sync succeeded from peer {}", peer_addr);
+                            info!(" Periodic sync succeeded from peer {}", peer_addr);
                             
                             // Update global blockchain
                             if let Ok(shared) = crate::runtime::blockchain_provider::get_global_blockchain().await {
@@ -2615,7 +2986,7 @@ impl Component for ProtocolsComponent {
                 }
             }
         });
-        info!("✅ Periodic peer sync task started (60s interval)");
+        info!(" Periodic peer sync task started (60s interval)");
         */
         
         // Initialize global mesh router provider for API access
@@ -2657,7 +3028,7 @@ impl Component for ProtocolsComponent {
         info!("Web4 protocols ready - ISP replacement operational");
         info!("DAO fee system active for UBI funding");
         info!("Post-quantum cryptography enabled");
-        info!("Mesh networking ready for ISP bypass");
+        info!("Mesh networking ready for ");
         
         *self.start_time.write().await = Some(Instant::now());
         *self.status.write().await = ComponentStatus::Running;
@@ -2908,7 +3279,7 @@ async fn try_bootstrap_blockchain_from_peer(
     }
     
     let peer_tip = match timeout(Duration::from_secs(5), async {
-        info!("📡 GET {} (fetching chain tip)", tip_url);
+        info!(" GET {} (fetching chain tip)", tip_url);
         let response = reqwest::get(&tip_url).await?;
         if response.status().is_success() {
             let tip: ChainTipInfo = response.json().await?;
@@ -2918,7 +3289,7 @@ async fn try_bootstrap_blockchain_from_peer(
         }
     }).await {
         Ok(Ok(tip)) => {
-            info!("✅ Peer chain tip: height={}, identities={}, validators={}", 
+            info!(" Peer chain tip: height={}, identities={}, validators={}", 
                   tip.height, tip.identity_count, tip.validator_count);
             tip
         }
@@ -2937,7 +3308,7 @@ async fn try_bootstrap_blockchain_from_peer(
         .map(|b| hex::encode(b.header.merkle_root.as_bytes()))
         .unwrap_or_else(|| "none".to_string());
     
-    info!("📊 Chain comparison:");
+    info!(" Chain comparison:");
     info!("   Local:  height={}, genesis={}", local_height, local_genesis);
     info!("   Peer:   height={}, genesis={}", peer_tip.height, peer_tip.genesis_hash);
     
@@ -2949,11 +3320,11 @@ async fn try_bootstrap_blockchain_from_peer(
         // Fall back to full export for genesis mismatch (merge logic needs full chain)
         let export_url = format!("http://{}/api/v1/blockchain/export", peer_addr);
         match timeout(Duration::from_secs(10), async {
-            info!("📡 GET {} (full chain for merge)", export_url);
+            info!(" GET {} (full chain for merge)", export_url);
             let response = reqwest::get(&export_url).await?;
             if response.status().is_success() {
                 let data = response.bytes().await?.to_vec();
-                info!("✅ Received {} bytes for merge evaluation", data.len());
+                info!(" Received {} bytes for merge evaluation", data.len());
                 Ok::<Vec<u8>, anyhow::Error>(data)
             } else {
                 Err(anyhow::anyhow!("Peer returned error: {}", response.status()))
@@ -2961,7 +3332,7 @@ async fn try_bootstrap_blockchain_from_peer(
         }).await {
             Ok(Ok(blockchain_data)) => {
                 let mut blockchain_clone = blockchain.read().await.clone();
-                info!("📦 Evaluating and merging different genesis chains...");
+                info!(" Evaluating and merging different genesis chains...");
                 blockchain_clone.evaluate_and_merge_chain(blockchain_data).await?;
                 info!(" Successfully synced and merged from {} (genesis mismatch)", peer_addr);
                 return Ok(blockchain_clone);
@@ -2977,7 +3348,7 @@ async fn try_bootstrap_blockchain_from_peer(
     
     // Step 4: Check if we need to sync even at same height
     if peer_tip.height < local_height {
-        info!("✅ Local chain is ahead (peer: {}, local: {})", peer_tip.height, local_height);
+        info!(" Local chain is ahead (peer: {}, local: {})", peer_tip.height, local_height);
         drop(local_blockchain);
         return Ok(blockchain.read().await.clone());
     }
@@ -2985,17 +3356,17 @@ async fn try_bootstrap_blockchain_from_peer(
     // If same height, check if peer has more identities/data
     if peer_tip.height == local_height {
         if peer_tip.identity_count > local_blockchain.identity_registry.len() {
-            info!("🔄 Same height but peer has more identities ({} vs {}) - syncing full chain for merge", 
+            info!(" Same height but peer has more identities ({} vs {}) - syncing full chain for merge", 
                   peer_tip.identity_count, local_blockchain.identity_registry.len());
             
             // Fetch full chain for merge evaluation
             let export_url = format!("http://{}/api/v1/blockchain/export", peer_addr);
             match timeout(Duration::from_secs(10), async {
-                info!("📡 GET {} (full chain for merge)", export_url);
+                info!(" GET {} (full chain for merge)", export_url);
                 let response = reqwest::get(&export_url).await?;
                 if response.status().is_success() {
                     let data = response.bytes().await?.to_vec();
-                    info!("✅ Received {} bytes for merge evaluation", data.len());
+                    info!(" Received {} bytes for merge evaluation", data.len());
                     Ok::<Vec<u8>, anyhow::Error>(data)
                 } else {
                     Err(anyhow::anyhow!("Peer returned error: {}", response.status()))
@@ -3004,27 +3375,27 @@ async fn try_bootstrap_blockchain_from_peer(
                 Ok(Ok(blockchain_data)) => {
                     drop(local_blockchain); // Release lock before merge
                     let mut blockchain_clone = blockchain.read().await.clone();
-                    info!("📦 Evaluating and merging chains with more peer data...");
+                    info!(" Evaluating and merging chains with more peer data...");
                     blockchain_clone.evaluate_and_merge_chain(blockchain_data).await?;
                     info!(" Successfully synced and merged additional data from {}", peer_addr);
                     return Ok(blockchain_clone);
                 }
                 Ok(Err(e)) => {
-                    warn!("⚠️ Failed to fetch full chain for merge: {}", e);
+                    warn!(" Failed to fetch full chain for merge: {}", e);
                 }
                 Err(_) => {
-                    warn!("⚠️ Timeout fetching full chain for merge");
+                    warn!(" Timeout fetching full chain for merge");
                 }
             }
         } else {
-            info!("✅ Local chain is up-to-date (peer: {} identities, local: {} identities)", 
+            info!(" Local chain is up-to-date (peer: {} identities, local: {} identities)", 
                   peer_tip.identity_count, local_blockchain.identity_registry.len());
         }
         drop(local_blockchain);
         return Ok(blockchain.read().await.clone());
     }
     
-    info!("🔄 Peer is ahead - fetching missing blocks {} to {}", local_height + 1, peer_tip.height);
+    info!(" Peer is ahead - fetching missing blocks {} to {}", local_height + 1, peer_tip.height);
     drop(local_blockchain); // Release lock
     
     // Fetch missing blocks incrementally (max 1000 at a time)
@@ -3033,11 +3404,11 @@ async fn try_bootstrap_blockchain_from_peer(
     let blocks_url = format!("http://{}/api/v1/blockchain/blocks/{}/{}", peer_addr, start, end);
     
     match timeout(Duration::from_secs(10), async {
-        info!("📡 GET {} ({} blocks)", blocks_url, end - start + 1);
+        info!(" GET {} ({} blocks)", blocks_url, end - start + 1);
         let response = reqwest::get(&blocks_url).await?;
         if response.status().is_success() {
             let data = response.bytes().await?.to_vec();
-            info!("✅ Received {} bytes ({} blocks)", data.len(), end - start + 1);
+            info!(" Received {} bytes ({} blocks)", data.len(), end - start + 1);
             Ok::<Vec<u8>, anyhow::Error>(data)
         } else {
             Err(anyhow::anyhow!("Peer returned error: {}", response.status()))
@@ -3048,7 +3419,7 @@ async fn try_bootstrap_blockchain_from_peer(
             let new_blocks: Vec<lib_blockchain::block::Block> = bincode::deserialize(&blocks_data)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize blocks: {}", e))?;
             
-            info!("📦 Appending {} new blocks to local chain", new_blocks.len());
+            info!(" Appending {} new blocks to local chain", new_blocks.len());
             
             // Append blocks to local chain
             let mut blockchain_guard = blockchain.write().await;

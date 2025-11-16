@@ -118,97 +118,13 @@ impl ValidatorHandler {
         Self { blockchain }
     }
 
-    /// Register a new validator
-    pub async fn register_validator(&self, request: RegisterValidatorRequest) -> ZhtpResult<ZhtpResponse> {
-        info!("Registering new validator: {}", request.identity_id);
-        
-        // Get blockchain instance
-        let blockchain = get_global_blockchain().await?;
-        let mut blockchain_guard = blockchain.write().await;
-        
-        // Parse identity ID (convert from DID or hex string to Hash)
-        let identity_hash = if request.identity_id.starts_with("did:") {
-            // Extract hash from DID
-            let did_parts: Vec<&str> = request.identity_id.split(':').collect();
-            if did_parts.len() >= 3 {
-                if let Ok(bytes) = hex::decode(did_parts[2]) {
-                    if bytes.len() == 32 {
-                        let mut hash_bytes = [0u8; 32];
-                        hash_bytes.copy_from_slice(&bytes);
-                        Hash(hash_bytes)
-                    } else {
-                        Hash(hash_blake3(request.identity_id.as_bytes()))
-                    }
-                } else {
-                    Hash(hash_blake3(request.identity_id.as_bytes()))
-                }
-            } else {
-                Hash(hash_blake3(request.identity_id.as_bytes()))
-            }
-        } else {
-            // Assume it's a hex hash string
-            if let Ok(bytes) = hex::decode(&request.identity_id) {
-                if bytes.len() == 32 {
-                    let mut hash_bytes = [0u8; 32];
-                    hash_bytes.copy_from_slice(&bytes);
-                    Hash(hash_bytes)
-                } else {
-                    Hash(hash_blake3(request.identity_id.as_bytes()))
-                }
-            } else {
-                Hash(hash_blake3(request.identity_id.as_bytes()))
-            }
-        };
-
-        // Check if validator already exists
-        if let Some(_existing) = blockchain_guard.get_validator(&hex::encode(&identity_hash.0)) {
-            return Err(anyhow::anyhow!("Validator already registered"));
-        }
-
-        // Parse consensus key
-        let consensus_key_bytes = hex::decode(&request.consensus_key)
-            .map_err(|_| anyhow::anyhow!("Invalid consensus key format"))?;
-
-        // Create ValidatorInfo for blockchain registration
-        let validator_info = lib_blockchain::blockchain::ValidatorInfo {
-            identity_id: hex::encode(&identity_hash.0),
-            stake: request.stake,
-            storage_provided: request.storage_provided,
-            consensus_key: consensus_key_bytes,
-            network_address: request.endpoints.get(0).cloned().unwrap_or_default(),
-            commission_rate: (request.commission_rate.min(100) as u8), // Convert u16 to u8, cap at 100%
-            status: "active".to_string(),
-            registered_at: chrono::Utc::now().timestamp() as u64,
-            last_activity: chrono::Utc::now().timestamp() as u64,
-            blocks_validated: 0,
-            slash_count: 0,
-        };
-
-        // Register validator through blockchain
-        match blockchain_guard.register_validator(validator_info) {
-            Ok(tx_hash) => {
-                info!("✅ Validator registered successfully: {}", hex::encode(tx_hash));
-                let response_data = serde_json::json!({
-                    "transaction_hash": hex::encode(tx_hash),
-                    "validator_id": hex::encode(&identity_hash.0),
-                    "message": "Validator registered successfully"
-                });
-                let json_response = serde_json::to_vec(&response_data)?;
-                Ok(ZhtpResponse::success_with_content_type(
-                    json_response,
-                    "application/json".to_string(),
-                    None,
-                ))
-            }
-            Err(e) => {
-                error!("Failed to register validator: {}", e);
-                Ok(ZhtpResponse::error(
-                    ZhtpStatus::InternalServerError,
-                    format!("Registration failed: {}", e),
-                ))
-            }
-        }
-    }
+    // REMOVED: register_validator() function - Security vulnerability
+    // This allowed anyone to register as a validator without:
+    // - Authentication
+    // - Proof of stake (actual locked funds)
+    // - Identity ownership verification
+    // - Signature validation
+    // Validator registration must go through proper governance channels only.
 
     /// Get list of all validators
     pub async fn get_validators(&self, page: Option<usize>, page_size: Option<usize>) -> ZhtpResult<ZhtpResponse> {
@@ -357,7 +273,7 @@ impl ValidatorHandler {
         // Update validator through blockchain
         match blockchain_guard.update_validator(&identity_id_str, updated_info) {
             Ok(tx_hash) => {
-                info!("✅ Validator updated successfully: {}", hex::encode(tx_hash));
+                info!(" Validator updated successfully: {}", hex::encode(tx_hash));
                 let response = serde_json::json!({
                     "transaction_hash": hex::encode(tx_hash),
                     "validator_id": hex::encode(&identity_hash.0),
@@ -406,7 +322,7 @@ impl ValidatorHandler {
         // Unregister validator through blockchain
         match blockchain_guard.unregister_validator(&identity_id_str) {
             Ok(tx_hash) => {
-                info!("✅ Validator unregistered successfully: {}", hex::encode(tx_hash));
+                info!(" Validator unregistered successfully: {}", hex::encode(tx_hash));
                 let response = serde_json::json!({
                     "transaction_hash": hex::encode(tx_hash),
                     "validator_id": hex::encode(&identity_hash.0),
@@ -441,9 +357,10 @@ impl ZhtpRequestHandler for ValidatorHandler {
         info!("Validator handler: {} {}", request.method, request.uri);
         
         match (request.method, request.uri.as_str()) {
-            (ZhtpMethod::Post, "/api/v1/validator/register") => {
-                self.handle_register_validator(request).await
-            }
+            // REMOVED: Insecure validator registration endpoint
+            // Validators should only be added through genesis or proper staking governance
+            // (ZhtpMethod::Post, "/api/v1/validator/register") => { ... }
+            
             (ZhtpMethod::Get, "/api/v1/validators") => {
                 self.handle_get_validators(request).await
             }
@@ -465,13 +382,8 @@ impl ZhtpRequestHandler for ValidatorHandler {
 }
 
 impl ValidatorHandler {
-    /// Handle POST /api/v1/validator/register
-    async fn handle_register_validator(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
-        let register_request: RegisterValidatorRequest = serde_json::from_slice(&request.body)
-            .map_err(|e| anyhow::anyhow!("Invalid request body: {}", e))?;
-        
-        self.register_validator(register_request).await
-    }
+    // REMOVED: handle_register_validator() - insecure endpoint
+    // Validators must be registered through genesis or governance only
     
     /// Handle GET /api/v1/validators
     async fn handle_get_validators(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {

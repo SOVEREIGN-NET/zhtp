@@ -34,13 +34,13 @@ echo ""
 
 # Check if Rust is installed
 if ! command -v cargo &> /dev/null; then
-    echo -e "${RED}❌ Rust is not installed. Install from https://rustup.rs${NC}"
+    echo -e "${RED} Rust is not installed. Install from https://rustup.rs${NC}"
     exit 1
 fi
 
 # Check if Android NDK is set
 if [ -z "$ANDROID_NDK_HOME" ] && [ -z "$NDK_HOME" ]; then
-    echo -e "${RED}❌ Android NDK not found!${NC}"
+    echo -e "${RED} Android NDK not found!${NC}"
     echo -e "${YELLOW}   Set ANDROID_NDK_HOME or NDK_HOME environment variable:${NC}"
     echo ""
     echo -e "   ${BLUE}export ANDROID_NDK_HOME=/path/to/android-ndk${NC}"
@@ -53,11 +53,11 @@ if [ -z "$ANDROID_NDK_HOME" ] && [ -z "$NDK_HOME" ]; then
 fi
 
 NDK_PATH="${ANDROID_NDK_HOME:-$NDK_HOME}"
-echo -e "${GREEN}✓ Using Android NDK: $NDK_PATH${NC}"
+echo -e "${GREEN} Using Android NDK: $NDK_PATH${NC}"
 
 # Add Android targets if not installed
 echo ""
-echo -e "${BLUE}📦 Checking Rust Android targets...${NC}"
+echo -e "${BLUE} Checking Rust Android targets...${NC}"
 TARGETS=(
     "aarch64-linux-android"
     "armv7-linux-androideabi"
@@ -67,7 +67,7 @@ TARGETS=(
 
 for target in "${TARGETS[@]}"; do
     if rustup target list | grep -q "$target (installed)"; then
-        echo -e "${GREEN}✓ $target already installed${NC}"
+        echo -e "${GREEN} $target already installed${NC}"
     else
         echo -e "${YELLOW}⚙ Installing $target...${NC}"
         rustup target add "$target"
@@ -77,7 +77,7 @@ done
 # Install cargo-ndk if not present
 if ! command -v cargo-ndk &> /dev/null; then
     echo ""
-    echo -e "${BLUE}📦 Installing cargo-ndk...${NC}"
+    echo -e "${BLUE} Installing cargo-ndk...${NC}"
     cargo install cargo-ndk
 fi
 
@@ -106,7 +106,7 @@ cd "$PROJECT_DIR"
 
 # ARM64 (primary target - modern devices)
 echo ""
-echo -e "${BLUE}🔨 Building for ARM64 (aarch64-linux-android)...${NC}"
+echo -e "${BLUE} Building for ARM64 (aarch64-linux-android)...${NC}"
 cargo ndk \
     --target aarch64-linux-android \
     --platform $MIN_SDK_VERSION \
@@ -114,11 +114,11 @@ cargo ndk \
     
 mkdir -p "$OUTPUT_DIR/jniLibs/arm64-v8a"
 cp "target/aarch64-linux-android/$PROFILE/libzhtp_mobile.so" "$OUTPUT_DIR/jniLibs/arm64-v8a/"
-echo -e "${GREEN}✓ ARM64 build complete${NC}"
+echo -e "${GREEN} ARM64 build complete${NC}"
 
 # ARMv7 (older devices)
 echo ""
-echo -e "${BLUE}🔨 Building for ARMv7 (armv7-linux-androideabi)...${NC}"
+echo -e "${BLUE} Building for ARMv7 (armv7-linux-androideabi)...${NC}"
 cargo ndk \
     --target armv7-linux-androideabi \
     --platform $MIN_SDK_VERSION \
@@ -126,11 +126,11 @@ cargo ndk \
     
 mkdir -p "$OUTPUT_DIR/jniLibs/armeabi-v7a"
 cp "target/armv7-linux-androideabi/$PROFILE/libzhtp_mobile.so" "$OUTPUT_DIR/jniLibs/armeabi-v7a/"
-echo -e "${GREEN}✓ ARMv7 build complete${NC}"
+echo -e "${GREEN} ARMv7 build complete${NC}"
 
 # x86_64 (emulator)
 echo ""
-echo -e "${BLUE}🔨 Building for x86_64 (emulator)...${NC}"
+echo -e "${BLUE} Building for x86_64 (emulator)...${NC}"
 cargo ndk \
     --target x86_64-linux-android \
     --platform $MIN_SDK_VERSION \
@@ -138,11 +138,11 @@ cargo ndk \
     
 mkdir -p "$OUTPUT_DIR/jniLibs/x86_64"
 cp "target/x86_64-linux-android/$PROFILE/libzhtp_mobile.so" "$OUTPUT_DIR/jniLibs/x86_64/"
-echo -e "${GREEN}✓ x86_64 build complete${NC}"
+echo -e "${GREEN} x86_64 build complete${NC}"
 
 # x86 (older emulator)
 echo ""
-echo -e "${BLUE}🔨 Building for x86 (older emulator)...${NC}"
+echo -e "${BLUE} Building for x86 (older emulator)...${NC}"
 cargo ndk \
     --target i686-linux-android \
     --platform $MIN_SDK_VERSION \
@@ -150,7 +150,7 @@ cargo ndk \
     
 mkdir -p "$OUTPUT_DIR/jniLibs/x86"
 cp "target/i686-linux-android/$PROFILE/libzhtp_mobile.so" "$OUTPUT_DIR/jniLibs/x86/"
-echo -e "${GREEN}✓ x86 build complete${NC}"
+echo -e "${GREEN} x86 build complete${NC}"
 
 # Display library sizes
 echo ""
@@ -168,7 +168,7 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║            Android Build Completed Successfully!          ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${GREEN}📦 Output: $OUTPUT_DIR/jniLibs${NC}"
+echo -e "${GREEN} Output: $OUTPUT_DIR/jniLibs${NC}"
 echo ""
 echo -e "${BLUE}To use in Android Studio:${NC}"
 echo ""
@@ -187,4 +187,4 @@ echo ""
 echo -e "  3. Load library in your app:"
 echo -e "     ${YELLOW}System.loadLibrary(\"zhtp_mobile\")${NC}"
 echo ""
-echo -e "${GREEN}🎉 Done!${NC}"
+echo -e "${GREEN} Done!${NC}"

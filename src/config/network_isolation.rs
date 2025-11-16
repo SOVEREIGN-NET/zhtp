@@ -1,6 +1,6 @@
 //! Network Isolation Configuration
 //!
-//! # ⚠️ IMPORTANT: USE CASE CLARIFICATION ⚠️
+//! #  IMPORTANT: USE CASE CLARIFICATION 
 //!
 //! This module provides network isolation for **PURE MESH DEPLOYMENTS ONLY**.
 //!
@@ -36,7 +36,7 @@
 //!
 //! ## About ingress_only_mode
 //!
-//! ⚠️ **DO NOT USE ingress_only_mode for bootstrap nodes**
+//!  **DO NOT USE ingress_only_mode for bootstrap nodes**
 //!
 //! This mode was designed for pure mesh edge scenarios but is NOT appropriate
 //! for public-facing servers. Setting firewall rules to block outbound traffic
@@ -315,33 +315,33 @@ impl NetworkIsolationConfig {
         }
 
         if self.protocol_filtering_mode {
-            info!("🔒 Applying PROTOCOL-LEVEL filtering (bootstrap mode)");
-            info!("   ✅ Accept connections FROM: anyone (through ISPs)");
-            info!("   ✅ Allow protocols: {:?}", self.allowed_protocols);
-            info!("   ❌ Block protocols: {:?}", self.blocked_protocols);
-            info!("   ℹ️  Only blockchain data accessible - no general internet routing");
+            info!(" Applying PROTOCOL-LEVEL filtering (bootstrap mode)");
+            info!("    Accept connections FROM: anyone (through ISPs)");
+            info!("    Allow protocols: {:?}", self.allowed_protocols);
+            info!("    Block protocols: {:?}", self.blocked_protocols);
+            info!("     Only blockchain data accessible - no general internet routing");
             
             // Protocol filtering is enforced at application layer
             // See: unified_server.rs message handler
             
-            info!("✅ Protocol filtering configured - bootstrap accepts blockchain traffic only");
+            info!(" Protocol filtering configured - bootstrap accepts blockchain traffic only");
             return Ok(());
         }
 
         if self.ingress_only_mode {
-            info!("🔒 Applying INGRESS-ONLY isolation (bootstrap mode)");
-            info!("   ✅ Accept connections FROM: anywhere (internet-facing)");
-            info!("   ✅ Allow connections TO: whitelisted blockchain peers only");
-            info!("   ❌ Block connections TO: arbitrary internet");
+            info!(" Applying INGRESS-ONLY isolation (bootstrap mode)");
+            info!("    Accept connections FROM: anywhere (internet-facing)");
+            info!("    Allow connections TO: whitelisted blockchain peers only");
+            info!("    Block connections TO: arbitrary internet");
             
             // Apply ingress-only firewall rules
             self.apply_ingress_only_rules().await?;
             
-            info!("✅ Bootstrap isolation applied - accepting internet connections, blocking outbound");
+            info!(" Bootstrap isolation applied - accepting internet connections, blocking outbound");
             return Ok(());
         }
 
-        info!("🔒 Applying network isolation for pure mesh operation");
+        info!(" Applying network isolation for pure mesh operation");
 
         // 1. Remove default gateway
         self.remove_default_gateway().await?;
@@ -355,7 +355,7 @@ impl NetworkIsolationConfig {
         // 4. Verify isolation is working
         self.verify_isolation().await?;
 
-        info!("✅ Network isolation applied - mesh is now ISP-free");
+        info!(" Network isolation applied - mesh is now ISP-free");
         Ok(())
     }
     
@@ -386,7 +386,7 @@ impl NetworkIsolationConfig {
     
     /// Apply firewall rules for ingress-only bootstrap mode
     async fn apply_ingress_only_rules(&self) -> Result<()> {
-        info!("📋 Configuring ingress-only firewall rules...");
+        info!(" Configuring ingress-only firewall rules...");
         
         #[cfg(target_os = "windows")]
         {
@@ -398,7 +398,7 @@ impl NetworkIsolationConfig {
             self.apply_linux_ingress_only_rules().await?;
         }
         
-        info!("✅ Ingress-only firewall rules applied");
+        info!(" Ingress-only firewall rules applied");
         Ok(())
     }
     
@@ -439,7 +439,7 @@ impl NetworkIsolationConfig {
                     
                     if let Ok(result) = output {
                         if result.status.success() {
-                            info!("  ✅ Inbound rule added: {}", rule.name);
+                            info!("   Inbound rule added: {}", rule.name);
                         }
                     }
                 } else {
@@ -458,7 +458,7 @@ impl NetworkIsolationConfig {
                     
                     if let Ok(result) = output {
                         if result.status.success() {
-                            info!("  ✅ Inbound rule added: {}", rule.name);
+                            info!("   Inbound rule added: {}", rule.name);
                         }
                     }
                 }
@@ -487,7 +487,7 @@ impl NetworkIsolationConfig {
             
             if let Ok(result) = output {
                 if result.status.success() {
-                    info!("  ✅ Outbound allowed to mesh: {}", dest_subnet);
+                    info!("   Outbound allowed to mesh: {}", dest_subnet);
                 }
             }
         }
@@ -515,7 +515,7 @@ impl NetworkIsolationConfig {
             
             if let Ok(result) = output {
                 if result.status.success() {
-                    info!("  ✅ Blocked outbound to internet (except whitelisted mesh)");
+                    info!("   Blocked outbound to internet (except whitelisted mesh)");
                 }
             }
         }
@@ -557,7 +557,7 @@ impl NetworkIsolationConfig {
             
             if let Ok(result) = output {
                 if result.status.success() {
-                    info!("  ✅ Outbound allowed to mesh: {}", dest_subnet);
+                    info!("   Outbound allowed to mesh: {}", dest_subnet);
                 }
             }
         }
@@ -583,7 +583,7 @@ impl NetworkIsolationConfig {
             
             if let Ok(result) = output {
                 if result.status.success() {
-                    info!("  ✅ Blocked outbound to internet (except whitelisted)");
+                    info!("   Blocked outbound to internet (except whitelisted)");
                 }
             }
         }
@@ -683,60 +683,6 @@ impl NetworkIsolationConfig {
     async fn apply_firewall_rules(&self) -> Result<()> {
         // Firewall rules disabled - requires administrator privileges
         // Users should manually configure firewall rules if needed
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    async fn apply_windows_firewall_rules(&self) -> Result<()> {
-        // Windows Firewall rules via netsh
-        for rule in &self.firewall_rules {
-            let rule_name = format!("ZHTP_Mesh_{}", rule.name.replace(" ", "_"));
-            
-            // Delete existing rule first (ignore errors)
-            let delete_rule_name = format!("name={}", rule_name);
-            let _ = Command::new("netsh")
-                .args(&["advfirewall", "firewall", "delete", "rule", &delete_rule_name])
-                .output();
-
-            // Create new rule
-            let rule_name_arg = format!("name={}", rule_name);
-            let rule_action_arg = format!("action={}", rule.action.to_lowercase());
-            let mut args = vec![
-                "advfirewall", "firewall", "add", "rule",
-                &rule_name_arg,
-                "dir=out",
-                &rule_action_arg,
-            ];
-
-            if let Some(ref protocol) = rule.protocol {
-                if protocol != "all" {
-                    args.push("protocol");
-                    args.push(protocol);
-                }
-            }
-
-            if let Some(ref dest) = rule.destination {
-                args.push("remoteip");
-                args.push(dest);
-            }
-
-            let output = Command::new("netsh")
-                .args(&args)
-                .output();
-
-            match output {
-                Ok(result) => {
-                    if result.status.success() {
-                        info!(" Windows firewall rule added: {}", rule.name);
-                    } else {
-                        let error = String::from_utf8_lossy(&result.stderr);
-                        warn!("Failed to add Windows firewall rule {}: {}", rule.name, error);
-                    }
-                }
-                Err(e) => warn!("Windows firewall command failed for {}: {}", rule.name, e),
-            }
-        }
-
         Ok(())
     }
 

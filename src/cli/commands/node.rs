@@ -4,11 +4,11 @@ use anyhow::{Result, anyhow};
 use crate::cli::{NodeArgs, NodeAction, ZhtpCli};
 use crate::config::environment::Environment;  // NEW: For network-specific data paths
 use crate::runtime::RuntimeOrchestrator;
-use crate::runtime::ComponentId;
 use crate::runtime::did_startup::{WalletStartupManager, WalletStartupResult};
 use crate::runtime::shared_dht::{initialize_global_dht_safe, get_dht_client};
 use lib_identity::ZhtpIdentity;
 use std::io::{self, Write};
+use std::sync::Arc;
 use blake3;
 
 // ============================================================================
@@ -26,12 +26,12 @@ fn prompt_for_identity_name() -> Result<String> {
         let name = name.trim();
         
         if name.is_empty() {
-            println!("❌ Name cannot be empty. Please try again.");
+            println!(" Name cannot be empty. Please try again.");
             continue;
         }
         
         if name.len() < 3 {
-            println!("❌ Name must be at least 3 characters long.");
+            println!(" Name must be at least 3 characters long.");
             continue;
         }
         
@@ -77,13 +77,13 @@ fn prompt_for_password(prompt: &str) -> Result<String> {
 
 /// Prompt for seed phrase confirmation
 fn confirm_seed_phrase(seed_phrase: &str) -> Result<()> {
-    println!("\n⚠️  IMPORTANT: Write down your recovery phrase!");
+    println!("\n  IMPORTANT: Write down your recovery phrase!");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📝 Your Recovery Phrase:");
+    println!(" Your Recovery Phrase:");
     println!("{}", seed_phrase);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("\n⚠️  Store this in a safe place. You'll need it to recover your wallet!");
-    println!("⚠️  Anyone with this phrase can access your funds!");
+    println!("\n  Store this in a safe place. You'll need it to recover your wallet!");
+    println!("  Anyone with this phrase can access your funds!");
     
     loop {
         print!("\nType 'CONFIRM' to verify you've saved your recovery phrase: ");
@@ -93,66 +93,66 @@ fn confirm_seed_phrase(seed_phrase: &str) -> Result<()> {
         io::stdin().read_line(&mut confirmation)?;
         
         if confirmation.trim() == "CONFIRM" {
-            println!("✅ Recovery phrase confirmed!");
+            println!(" Recovery phrase confirmed!");
             return Ok(());
         } else {
-            println!("❌ You must type 'CONFIRM' to continue. Please save your recovery phrase first.");
+            println!(" You must type 'CONFIRM' to continue. Please save your recovery phrase first.");
         }
     }
 }
 
 /// Prompt for DID password with confirmation
 fn prompt_for_did_password() -> Result<String> {
-    println!("\n🔐 Set a password to protect your Digital Identity");
+    println!("\n Set a password to protect your Digital Identity");
     println!("Requirements: 8+ chars, uppercase, lowercase, number, special character");
     
     loop {
         let password = prompt_for_password("\nEnter password: ")?;
         
         if let Err(e) = validate_password_strength(&password) {
-            println!("❌ {}", e);
+            println!(" {}", e);
             continue;
         }
         
         let confirmation = prompt_for_password("Confirm password: ")?;
         
         if password != confirmation {
-            println!("❌ Passwords don't match. Please try again.");
+            println!(" Passwords don't match. Please try again.");
             continue;
         }
         
-        println!("✅ Password set successfully!");
+        println!(" Password set successfully!");
         return Ok(password);
     }
 }
 
 /// Prompt for optional wallet password
 fn prompt_for_wallet_password(wallet_type: &str) -> Result<Option<String>> {
-    println!("\n🔐 Set a password for your {} wallet (optional)", wallet_type);
+    println!("\n Set a password for your {} wallet (optional)", wallet_type);
     print!("Press Enter to skip, or type a password: ");
     io::stdout().flush()?;
     
     let password = rpassword::read_password()?;
     
     if password.is_empty() {
-        println!("⏭️  Skipping wallet password");
+        println!("  Skipping wallet password");
         return Ok(None);
     }
     
     // Validate wallet password (minimum 6 chars)
     if password.len() < 6 {
-        println!("❌ Wallet password must be at least 6 characters. Skipping.");
+        println!(" Wallet password must be at least 6 characters. Skipping.");
         return Ok(None);
     }
     
     let confirmation = prompt_for_password("Confirm wallet password: ")?;
     
     if password != confirmation {
-        println!("❌ Passwords don't match. Skipping wallet password.");
+        println!(" Passwords don't match. Skipping wallet password.");
         return Ok(None);
     }
     
-    println!("✅ Wallet password set!");
+    println!(" Wallet password set!");
     Ok(Some(password))
 }
 
@@ -181,7 +181,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("Pure mesh mode: {}", pure_mesh);
             
             if edge_mode {
-                println!("🔹 Edge Mode: ENABLED (lightweight sync)");
+                println!(" Edge Mode: ENABLED (lightweight sync)");
                 println!("   Max headers: {} (~{} KB storage)", 
                     edge_max_headers, 
                     (edge_max_headers * 200) / 1024);
@@ -198,7 +198,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             });
             
             if let Some(ref net) = network_override {
-                println!("🌐 Network Override: {}", net);
+                println!(" Network Override: {}", net);
             }
             
             // Show node type information if using predefined configs
@@ -210,7 +210,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 } else if config_path.contains("storage-node") {
                     println!(" Node Type: Storage Node (Distributed storage services)");
                 } else if config_path.contains("edge-node") {
-                    println!("Node Type: Edge Node (Mesh networking and ISP bypass)");
+                    println!("Node Type: Edge Node (Mesh networking and )");
                 } else if config_path.contains("dev-node") {
                     println!("Node Type: Development Node (Testing and development)");
                 }
@@ -255,7 +255,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             let is_validator = node_config.consensus_config.validator_enabled;
             
             if is_edge_node {
-                println!("🔷 Node Type: EDGE NODE");
+                println!(" Node Type: EDGE NODE");
                 println!("   - Headers-only sync (~{} KB storage)", (edge_max_headers * 200) / 1024);
                 println!("   - ZK proof verification (no generation)");
                 println!("   - Optimized for BLE/mesh networking");
@@ -266,14 +266,14 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 println!("   - Consensus participation");
                 println!("   - ZK proof generation");
             } else {
-                println!("🔹 Node Type: FULL NODE");
+                println!(" Node Type: FULL NODE");
                 println!("   - Full blockchain sync");
                 println!("   - No consensus participation");
             }
             
             // Apply network override if --network flag was provided
             if let Some(network_env) = network_override {
-                println!("🔄 Overriding config environment with CLI flag: {}", network_env);
+                println!(" Overriding config environment with CLI flag: {}", network_env);
                 node_config.environment = network_env;
                 
                 // Update related config fields for consistency
@@ -326,7 +326,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             if is_edge_node {
                 orchestrator.set_edge_node(true).await;
                 orchestrator.set_edge_max_headers(edge_max_headers).await;
-                println!("🔹 Edge mode configured: max_headers={}", edge_max_headers);
+                println!(" Edge mode configured: max_headers={}", edge_max_headers);
             }
             
             // ================================================================
@@ -335,15 +335,17 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             
             println!("🔌 Starting network components for peer discovery...");
             
-            // Start minimal components needed for network discovery:
-            // 1. Crypto (for keypairs)
-            // 2. Network (for mesh server and peer discovery)
-            // NOTE: Do NOT start Protocols yet - it needs BlockchainComponent to initialize shared blockchain first
-            orchestrator.register_all_components().await?;
+            // PHASE 1: Register and start ONLY Crypto + Network for peer discovery
+            // We'll register remaining components AFTER getting genesis identities
+            use crate::runtime::components::{CryptoComponent, NetworkComponent};
             
+            println!("   → Registering CryptoComponent...");
+            orchestrator.register_component(Arc::new(CryptoComponent::new())).await?;
             println!("   → Starting CryptoComponent...");
             orchestrator.start_component(crate::runtime::ComponentId::Crypto).await?;
             
+            println!("   → Registering NetworkComponent...");
+            orchestrator.register_component(Arc::new(NetworkComponent::new())).await?;
             println!("   → Starting NetworkComponent...");
             orchestrator.start_component(crate::runtime::ComponentId::Network).await?;
             
@@ -366,9 +368,9 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             }
 
             if !network_ready {
-                println!("   ⚠️ Network stack did not report ready within timeout; proceeding with discovery anyway (may be slower)");
+                println!("    Network stack did not report ready within timeout; proceeding with discovery anyway (may be slower)");
             } else {
-                println!("✅ Network components reported ready - attempting peer discovery...");
+                println!(" Network components reported ready - attempting peer discovery...");
             }
             
             // NOW try to bootstrap to existing network (network is listening!)
@@ -376,7 +378,7 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             
             let startup_result = match mesh_connection_result {
                 Ok(existing_network_info) => {
-                    println!("🌐 Connected to existing ZHTP network!");
+                    println!(" Connected to existing ZHTP network!");
                     println!("   Network peers: {}", existing_network_info.peer_count);
                     println!("   Blockchain height: {}", existing_network_info.blockchain_height);
                     
@@ -389,8 +391,8 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                     handle_existing_network_identity(&existing_network_info).await?
                 }
                 Err(_) => {
-                    println!("ℹ️  No existing ZHTP network found or connection failed");
-                    println!("🆕 Starting new genesis network...");
+                    println!("  No existing ZHTP network found or connection failed");
+                    println!(" Starting new genesis network...");
                     
                     // Tell orchestrator we're creating new network (create genesis)
                     if let Err(e) = orchestrator.set_joined_existing_network(false).await {
@@ -402,16 +404,58 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 }
             };
             
-            println!("✅ User wallet established: {}", startup_result.wallet_name);
+            println!(" User wallet established: {}", startup_result.wallet_name);
             
-            // Pass user wallet to orchestrator before starting remaining components
+            // CRITICAL: Pass user wallet to orchestrator BEFORE registering remaining components
+            // so genesis identities are available when IdentityComponent is created
             if let Err(e) = orchestrator.set_user_wallet(startup_result).await {
                 eprintln!("Warning: Failed to set user wallet: {}", e);
             }
             
-            println!("⚙️  Starting remaining system components...");
+            println!("  Registering remaining system components with genesis identities...");
             
-            // CRITICAL ORDER: Start Blockchain BEFORE Protocols!
+            // PHASE 2: Register remaining components (now that we have genesis identities)
+            use crate::runtime::components::{
+                ZKComponent, IdentityComponent, StorageComponent, BlockchainComponent,
+                ConsensusComponent, EconomicsComponent, ProtocolsComponent, ApiComponent
+            };
+            
+            orchestrator.register_component(Arc::new(ZKComponent::new())).await?;
+            
+            // Register Identity component with genesis identities AND private keys
+            let genesis_identities = orchestrator.get_genesis_identities().await;
+            let genesis_private_data = orchestrator.get_genesis_private_data().await;
+            
+            if genesis_identities.is_empty() {
+                println!("     Warning: No genesis identities found!");
+                orchestrator.register_component(Arc::new(IdentityComponent::new())).await?;
+            } else {
+                println!("    Registering IdentityComponent with {} genesis identities", genesis_identities.len());
+                orchestrator.register_component(Arc::new(
+                    IdentityComponent::new_with_identities_and_private_data(genesis_identities, genesis_private_data)
+                )).await?;
+            }
+            
+            orchestrator.register_component(Arc::new(StorageComponent::new())).await?;
+            
+            // Register BlockchainComponent with user wallet
+            let user_wallet = orchestrator.get_user_wallet().await;
+            let environment = orchestrator.get_environment();
+            let bootstrap_validators = orchestrator.get_bootstrap_validators();
+            let joined_existing_network = orchestrator.get_joined_existing_network().await;
+            orchestrator.register_component(Arc::new(BlockchainComponent::new_with_full_config(
+                user_wallet,
+                environment,
+                bootstrap_validators,
+                joined_existing_network
+            ))).await?;
+            
+            orchestrator.register_component(Arc::new(ConsensusComponent::new(environment))).await?;
+            orchestrator.register_component(Arc::new(ProtocolsComponent::new(environment, node_config.protocols_config.api_port))).await?;
+            orchestrator.register_component(Arc::new(EconomicsComponent::new())).await?;
+            orchestrator.register_component(Arc::new(ApiComponent::new())).await?;
+            
+            println!("  Starting remaining system components...");
             // BlockchainComponent creates the shared blockchain with proper genesis funding.
             // ProtocolsComponent needs that shared blockchain to exist when it starts.
             
@@ -481,23 +525,23 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
 
 /// Attempt to bootstrap to an existing ZHTP mesh network
 async fn attempt_mesh_bootstrap(_orchestrator: &mut RuntimeOrchestrator, environment: &Environment) -> Result<ExistingNetworkInfo> {
-    println!("🔍 Scanning for existing ZHTP network...");
+    println!(" Scanning for existing ZHTP network...");
     println!("   (Network components are now listening and can be discovered)");
     
     // Initialize DHT and perform ACTIVE peer discovery
-    println!("📡 Initializing DHT for peer discovery...");
+    println!(" Initializing DHT for peer discovery...");
     let node_identity = create_or_load_node_identity(environment).await?;
     initialize_global_dht_safe(node_identity.clone()).await?;
     
     // Start actual discovery mechanisms (mDNS + DHT bootstrap)
-    println!("🔎 Discovering peers via mDNS, UDP multicast, and DHT bootstrap...");
+    println!(" Discovering peers via mDNS, UDP multicast, and DHT bootstrap...");
     println!("   (This may take up to 30 seconds for thorough network scanning)");
     let discovered_peers = perform_active_peer_discovery(&node_identity, environment).await?;
     
     let peer_count = discovered_peers.len();
     
     if peer_count > 0 {
-        println!("✅ Found {} ZHTP peers on network", peer_count);
+        println!(" Found {} ZHTP peers on network", peer_count);
         for (i, peer) in discovered_peers.iter().enumerate() {
             println!("   {}. {}", i + 1, peer);
         }
@@ -513,7 +557,7 @@ async fn attempt_mesh_bootstrap(_orchestrator: &mut RuntimeOrchestrator, environ
             environment: environment.clone(),
         })
     } else {
-        println!("ℹ️  No ZHTP peers found - will create genesis network");
+        println!("  No ZHTP peers found - will create genesis network");
         Err(anyhow!("No network peers found"))
     }
 }
@@ -669,7 +713,7 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
         dht_bootstrap.enhance_bootstrap(&[])
     ).await {
         Ok(Ok(peers)) => {
-            println!("     ✓ DHT/mDNS found {} peers", peers.len());
+            println!("      DHT/mDNS found {} peers", peers.len());
             all_discovered_peers.extend(peers);
         }
         Ok(Err(e)) => {
@@ -688,7 +732,7 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
         discover_via_multicast()
     ).await {
         Ok(Ok(peers)) => {
-            println!("     ✓ Multicast found {} peers", peers.len());
+            println!("      Multicast found {} peers", peers.len());
             all_discovered_peers.extend(peers);
         }
         Ok(Err(e)) => {
@@ -706,7 +750,7 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
         scan_local_subnet_for_zhtp(environment)
     ).await {
         Ok(Ok(peers)) => {
-            println!("     ✓ Port scan found {} peers", peers.len());
+            println!("      Port scan found {} peers", peers.len());
             all_discovered_peers.extend(peers);
         }
         Ok(Err(e)) => {
@@ -840,13 +884,13 @@ async fn fetch_blockchain_info_from_discovered_peers(peers: &[String]) -> Result
                     if let Ok(json) = response.json::<serde_json::Value>().await {
                         if let Some(h) = json.get("height").and_then(|v| v.as_u64()) {
                             height = h;
-                            println!("     📊 Peer {} reports blockchain height: {}", api_url, height);
+                            println!("      Peer {} reports blockchain height: {}", api_url, height);
                             break; // Got valid response
                         }
                     }
                 }
                 Ok(Err(e)) => {
-                    println!("     ⚠️ Failed to query peer {}: {}", api_url, e);
+                    println!("      Failed to query peer {}: {}", api_url, e);
                 }
                 Err(_) => {
                     println!("     ⏱ Timeout querying peer {}", api_url);
@@ -936,40 +980,10 @@ struct BlockchainInfo {
 /// Create or load persistent node identity that serves as both DHT address and wallet address
 /// This ensures the node has a consistent identity across all DHT operations
 pub async fn create_or_load_node_identity(environment: &Environment) -> Result<ZhtpIdentity> {
-    use std::path::Path;
-    use std::fs;
     use lib_crypto::generate_keypair;
     
-    // Use network-specific data directory
-    let data_dir = environment.data_directory();
-    let identity_file = format!("{}/node_identity.json", data_dir);
-    
-    // Try to load existing node identity
-    if Path::new(&identity_file).exists() {
-        println!(" Loading existing node identity from {}", identity_file);
-        
-        match fs::read_to_string(&identity_file) {
-            Ok(identity_json) => {
-                match serde_json::from_str::<ZhtpIdentity>(&identity_json) {
-                    Ok(identity) => {
-                        println!(" Loaded node identity: {:?}", &identity.id.to_string()[..8]);
-                        return Ok(identity);
-                    }
-                    Err(e) => {
-                        println!(" Failed to parse existing identity file: {}", e);
-                        // Fall through to create new identity
-                    }
-                }
-            }
-            Err(e) => {
-                println!(" Failed to read identity file: {}", e);
-                // Fall through to create new identity
-            }
-        }
-    }
-    
-    // Create new node identity
-    println!(" Creating new persistent node identity...");
+    // Create new node identity in RAM only (no disk persistence yet)
+    println!(" Creating new node identity in memory...");
     
     // Generate cryptographic key pair for the node
     let keypair = generate_keypair()?;
@@ -987,177 +1001,36 @@ pub async fn create_or_load_node_identity(environment: &Environment) -> Result<Z
     
     println!(" Created node identity with ID: {:?}", &node_identity.id.to_string()[..8]);
     println!(" This identity serves as both DHT address and primary node address");
-    
-    // Save the identity to disk for persistence (network-specific directory)
-    if let Err(e) = fs::create_dir_all(&data_dir) {
-        println!(" Warning: Could not create data directory {}: {}", data_dir, e);
-    }
-    
-    match serde_json::to_string_pretty(&node_identity) {
-        Ok(identity_json) => {
-            if let Err(e) = fs::write(&identity_file, identity_json) {
-                println!(" Warning: Could not save identity to disk: {}", e);
-            } else {
-                println!(" Node identity saved to {}", identity_file);
-            }
-        }
-        Err(e) => {
-            println!(" Warning: Could not serialize identity: {}", e);
-        }
-    }
+    println!(" [RAM-ONLY] Identity will be recreated on next startup (no persistence yet)");
     
     Ok(node_identity)
 }
 
-/// Create a wallet using the node's DHT identity as the primary address
-/// This ensures wallet address = DHT address = node identity
+/// Create a wallet using proper dual-identity architecture
+/// Creates BOTH a user identity (with wallets) AND a node device identity (owned by user)
 async fn create_wallet_from_node_identity(network_info: &ExistingNetworkInfo) -> Result<WalletStartupResult> {
-    println!(" Creating wallet from DHT node identity...");
-    
-    // Get the persistent node identity (uses network-specific data directory)
-    let node_identity = create_or_load_node_identity(&network_info.environment).await?;
-    
-    println!(" Node DHT Address: {}", hex::encode(&node_identity.id.0));
-    println!("Primary Wallet Address: {}", hex::encode(&node_identity.id.0));
+    println!(" Creating identity and wallet...");
     println!(" Network: {}", network_info.network_id);
     
     // ========================================================================
     // STEP 1: Prompt for identity name
     // ========================================================================
     let identity_name = prompt_for_identity_name()?;
-    println!("✅ Identity name: {}", identity_name);
+    println!(" Identity name: {}", identity_name);
     
     // ========================================================================
-    // STEP 2: Create wallet with seed phrase
+    // STEP 2: Create user identity with wallet and seed phrase
     // ========================================================================
     let wallet_name = format!("{}'s Primary Wallet", identity_name);
     
-    // Use the identity's built-in wallet manager to create a wallet
-    let mut node_identity_mut = node_identity.clone();
-    let (wallet_id, seed_phrase_struct) = match node_identity_mut.wallet_manager.create_wallet_with_seed_phrase(
-        lib_identity::wallets::WalletType::Standard,
+    let (user_identity, wallet_id, seed_phrase, user_private_data) = lib_identity::create_user_identity_with_wallet(
+        identity_name.clone(),
         wallet_name.clone(),
         Some("primary".to_string()),
-    ).await {
-        Ok((wallet_id, seed_phrase)) => {
-            println!(" ✓ Wallet created with seed phrase");
-            (wallet_id, seed_phrase)
-        }
-        Err(e) => {
-            return Err(anyhow!("Failed to create wallet with seed phrase: {}", e));
-        }
-    };
-    
-    let actual_seed_phrase = seed_phrase_struct.words.join(" ");
-    
-    // ========================================================================
-    // STEP 3: Display and confirm seed phrase
-    // ========================================================================
-    confirm_seed_phrase(&actual_seed_phrase)?;
-    
-    // ========================================================================
-    // STEP 4: Set DID password
-    // ========================================================================
-    let did_password = prompt_for_did_password()?;
-    
-    // Hash the password for storage using Blake3
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(did_password.as_bytes());
-    let password_hash = hasher.finalize();
-    
-    println!("🔐 DID password secured with Blake3 hash: {}...", hex::encode(&password_hash.as_bytes()[..8]));
-    
-    // ========================================================================
-    // STEP 5: Optional wallet passwords
-    // ========================================================================
-    let _primary_wallet_password = prompt_for_wallet_password("Primary")?;
-    let _savings_wallet_password = prompt_for_wallet_password("Savings")?;
-    let _staking_wallet_password = prompt_for_wallet_password("Staking")?;
-    
-    println!("\n✅ All passwords and security configured!");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    
-    // Create wallet address in ZHTP format for compatibility (full address)
-    let wallet_address = format!("zhtp:{}", hex::encode(&wallet_id.0));
-    
-    // Return result compatible with existing ZHTP system  
-    Ok(WalletStartupResult {
-        node_identity_id: node_identity.id.clone(),
-        node_wallet_id: wallet_id,
-        wallet_name,
-        seed_phrase: actual_seed_phrase,
-        wallet_address,
-    })
-}
-
-/// Create a genesis wallet using the node's DHT identity as the primary address
-/// This now creates BOTH a user identity (with wallet) AND a node device identity (for networking)
-async fn create_genesis_wallet_from_node_identity(environment: &Environment) -> Result<WalletStartupResult> {
-    println!("Creating genesis wallet from DHT node identity...");
-    
-    // Check if we have an existing setup (uses network-specific data directory)
-    let data_dir = environment.data_directory();
-    let identity_file = format!("{}/node_identity.json", data_dir);
-    let user_identity_file = format!("{}/user_identity.json", data_dir);
-    
-    // Try to load existing identities if they exist
-    if std::path::Path::new(&identity_file).exists() && std::path::Path::new(&user_identity_file).exists() {
-        println!(" Loading existing identity setup...");
-        
-        // Load the node device identity
-        let node_identity_json = std::fs::read_to_string(&identity_file)?;
-        let node_identity: ZhtpIdentity = serde_json::from_str(&node_identity_json)?;
-        
-        // Load the user identity  
-        let user_identity_json = std::fs::read_to_string(&user_identity_file)?;
-        let user_identity: ZhtpIdentity = serde_json::from_str(&user_identity_json)?;
-        
-        println!(" Loaded node device identity: {}", hex::encode(&node_identity.id.0[..8]));
-        println!(" Loaded user identity: {}", hex::encode(&user_identity.id.0[..8]));
-        
-        // Get the primary wallet from the user identity
-        let wallet_summaries = user_identity.wallet_manager.list_wallets();
-        if let Some(first_wallet) = wallet_summaries.first() {
-            let wallet_id = first_wallet.id.clone();
-            let wallet_name = format!("genesis-{}", hex::encode(&user_identity.id.0[..8]));
-            let wallet_address = format!("zhtp:{}", hex::encode(&wallet_id.0[..16]));
-            
-            // Note: We can't retrieve the seed phrase from an existing wallet
-            // User should have saved it during initial creation
-            return Ok(WalletStartupResult {
-                node_identity_id: node_identity.id.clone(),
-                node_wallet_id: wallet_id,
-                wallet_name,
-                seed_phrase: "".to_string(), // Can't retrieve existing seed phrase
-                wallet_address,
-            });
-        }
-    }
-    
-    println!(" Creating new genesis identity setup...");
-    println!(" This will create:");
-    println!("   1. User identity (Human) with genesis wallet");
-    println!("   2. Node device identity (Device) for networking");
-    println!();
-    
-    // ========================================================================
-    // STEP 1: Prompt for identity name
-    // ========================================================================
-    let user_name = prompt_for_identity_name()?;
-    println!("✅ Identity name: {}", user_name);
-    
-    // ========================================================================
-    // STEP 2: Create wallet and get seed phrase
-    // ========================================================================
-    let wallet_name = format!("{}'s Genesis Wallet", user_name);
-    
-    let (user_identity_id, wallet_id, seed_phrase) = lib_identity::create_user_identity_with_wallet(
-        user_name.clone(),
-        wallet_name.clone(),
-        Some("genesis".to_string()),
     ).await?;
     
-    println!(" ✓ User identity created: {}", hex::encode(&user_identity_id.0[..8]));
+    println!("  User identity created: {}", hex::encode(&user_identity.id.0[..8]));
+    println!("  Wallet created with seed phrase");
     
     // ========================================================================
     // STEP 3: Display and confirm seed phrase
@@ -1174,7 +1047,93 @@ async fn create_genesis_wallet_from_node_identity(environment: &Environment) -> 
     hasher.update(did_password.as_bytes());
     let password_hash = hasher.finalize();
     
-    println!("🔐 DID password secured with Blake3 hash: {}...", hex::encode(&password_hash.as_bytes()[..8]));
+    println!(" DID password secured with Blake3 hash: {}...", hex::encode(&password_hash.as_bytes()[..8]));
+    
+    // ========================================================================
+    // STEP 5: Optional wallet passwords
+    // ========================================================================
+    let _primary_wallet_password = prompt_for_wallet_password("Primary")?;
+    let _savings_wallet_password = prompt_for_wallet_password("Savings")?;
+    let _staking_wallet_password = prompt_for_wallet_password("Staking")?;
+    
+    println!("\n All passwords and security configured!");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    
+    // ========================================================================
+    // STEP 6: Create node device identity owned by the user
+    // ========================================================================
+    let node_device_name = format!("{}'s Node Device", identity_name);
+    let (node_identity, node_private_data) = lib_identity::create_node_device_identity(
+        user_identity.id.clone(),  // User owns this device
+        wallet_id.clone(),
+        node_device_name,
+    ).await?;
+    
+    println!("  Node device identity created: {}", hex::encode(&node_identity.id.0[..8]));
+    println!("  Node device owned by user: {}", hex::encode(&user_identity.id.0[..8]));
+    
+    // Create wallet address in ZHTP format for compatibility
+    let wallet_address = format!("zhtp:{}", hex::encode(&wallet_id.0));
+    
+    // Return result with proper dual-identity architecture
+    Ok(WalletStartupResult {
+        user_identity: user_identity.clone(),
+        node_identity: node_identity.clone(),
+        user_private_data,
+        node_private_data,
+        node_identity_id: node_identity.id.clone(),
+        node_wallet_id: wallet_id,
+        wallet_name,
+        seed_phrase,
+        wallet_address,
+    })
+}
+
+/// Create a genesis wallet using the node's DHT identity as the primary address
+/// This now creates BOTH a user identity (with wallet) AND a node device identity (for networking)
+/// Identities are kept in memory only - never loaded from disk
+async fn create_genesis_wallet_from_node_identity(_environment: &Environment) -> Result<WalletStartupResult> {
+    println!("Creating genesis wallet and identity setup...");
+    println!(" This will create:");
+    println!("   1. User identity (Human) with genesis wallet");
+    println!("   2. Node device identity (Device) for networking");
+    println!();
+    
+    // ========================================================================
+    // STEP 1: Prompt for identity name
+    // ========================================================================
+    let user_name = prompt_for_identity_name()?;
+    println!(" Identity name: {}", user_name);
+    
+    // ========================================================================
+    // STEP 2: Create wallet and get seed phrase
+    // ========================================================================
+    let wallet_name = format!("{}'s Genesis Wallet", user_name);
+    
+    let (user_identity, wallet_id, seed_phrase, user_private_data) = lib_identity::create_user_identity_with_wallet(
+        user_name.clone(),
+        wallet_name.clone(),
+        Some("genesis".to_string()),
+    ).await?;
+    
+    println!("  User identity created: {}", hex::encode(&user_identity.id.0[..8]));
+    
+    // ========================================================================
+    // STEP 3: Display and confirm seed phrase
+    // ========================================================================
+    confirm_seed_phrase(&seed_phrase)?;
+    
+    // ========================================================================
+    // STEP 4: Set DID password
+    // ========================================================================
+    let did_password = prompt_for_did_password()?;
+    
+    // Hash the password for storage using Blake3
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(did_password.as_bytes());
+    let password_hash = hasher.finalize();
+    
+    println!(" DID password secured with Blake3 hash: {}...", hex::encode(&password_hash.as_bytes()[..8]));
     
     // ========================================================================
     // STEP 5: Optional wallet passwords
@@ -1186,40 +1145,27 @@ async fn create_genesis_wallet_from_node_identity(environment: &Environment) -> 
     // Note: Wallet passwords are collected but not yet integrated into wallet storage
     // This will be implemented in a future update to the wallet encryption system
     
-    println!("\n✅ All passwords and security configured!");
+    println!("\n All passwords and security configured!");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     
     // ========================================================================
     // STEP 6: Create node device identity owned by the user
     // ========================================================================
     let node_device_name = format!("{}'s Node Device", user_name);
-    let node_identity_id = lib_identity::create_node_device_identity(
-        user_identity_id.clone(),
+    let (node_identity, node_private_data) = lib_identity::create_node_device_identity(
+        user_identity.id.clone(),
         wallet_id.clone(),
         node_device_name,
     ).await?;
     
-    println!(" ✓ Node device identity created: {}", hex::encode(&node_identity_id.0[..8]));
-    println!(" Genesis Node DHT Address (full): {}", hex::encode(&node_identity_id.0));
+    println!("  Node device identity created: {}", hex::encode(&node_identity.id.0[..8]));
+    println!(" Genesis Node DHT Address (full): {}", hex::encode(&node_identity.id.0));
     println!(" Genesis Wallet Address (full): {}", hex::encode(&wallet_id.0));
     println!(" This node will be the genesis node for a new ZHTP network");
     
-    // Save both identities for future use
-    std::fs::create_dir_all("./data")?;
-    
-    // We need to load the actual identity objects to save them
-    let identity_manager = lib_identity::IdentityManager::new();
-    if let Some(node_identity) = identity_manager.get_identity(&node_identity_id) {
-        let node_json = serde_json::to_string_pretty(&node_identity)?;
-        std::fs::write(&identity_file, node_json)?;
-        println!(" Node device identity saved to {}", identity_file);
-    }
-    
-    if let Some(user_identity) = identity_manager.get_identity(&user_identity_id) {
-        let user_json = serde_json::to_string_pretty(&user_identity)?;
-        std::fs::write(&user_identity_file, user_json)?;
-        println!(" User identity saved to {}", user_identity_file);
-    }
+    // NOTE: Identities are kept in memory only - not saved to disk
+    // When persistent storage is implemented, we'll save/load properly
+    println!(" Identities created in memory (not persisted to disk)");
     
     println!(" Genesis Seed Phrase: {}", seed_phrase);
     println!(" CRITICAL: Save this seed phrase - it controls the genesis node!");
@@ -1227,11 +1173,15 @@ async fn create_genesis_wallet_from_node_identity(environment: &Environment) -> 
     // Create wallet address in ZHTP format
     let wallet_address = format!("zhtp:{}", hex::encode(&wallet_id.0[..16]));
     
-    // Return result with the node device identity (used for DHT)
+    // Return result with the identities and REAL private keys
     Ok(WalletStartupResult {
-        node_identity_id,
+        user_identity: user_identity.clone(),
+        node_identity: node_identity.clone(),
+        user_private_data,
+        node_private_data,
+        node_identity_id: node_identity.id.clone(),
         node_wallet_id: wallet_id,
-        wallet_name: format!("genesis-{}", hex::encode(&user_identity_id.0[..8])),
+        wallet_name: format!("genesis-{}", hex::encode(&user_identity.id.0[..8])),
         seed_phrase,
         wallet_address,
     })

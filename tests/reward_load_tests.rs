@@ -54,7 +54,7 @@ fn create_load_test_config() -> RewardOrchestratorConfig {
 
 #[tokio::test]
 async fn test_concurrent_rate_limit_checks() -> Result<()> {
-    println!("\n🧪 Load Test: Concurrent rate limit checks");
+    println!("\n Load Test: Concurrent rate limit checks");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -94,9 +94,9 @@ async fn test_concurrent_rate_limit_checks() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed 50 concurrent checks in {:?}", elapsed);
-    println!("   ✓ Success: {}, Rate limited: {}", success_count, 50 - success_count);
-    println!("   ✓ Throughput: {:.2} checks/sec", 50.0 / elapsed.as_secs_f64());
+    println!("    Processed 50 concurrent checks in {:?}", elapsed);
+    println!("    Success: {}, Rate limited: {}", success_count, 50 - success_count);
+    println!("    Throughput: {:.2} checks/sec", 50.0 / elapsed.as_secs_f64());
     
     // Should handle all concurrent checks without panicking
     assert!(success_count > 0, "At least some checks should succeed");
@@ -106,7 +106,7 @@ async fn test_concurrent_rate_limit_checks() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_claim_recording() -> Result<()> {
-    println!("\n🧪 Load Test: Concurrent claim recording");
+    println!("\n Load Test: Concurrent claim recording");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -135,15 +135,15 @@ async fn test_concurrent_claim_recording() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Recorded 100 concurrent claims in {:?}", elapsed);
-    println!("   ✓ Throughput: {:.2} claims/sec", 100.0 / elapsed.as_secs_f64());
+    println!("    Recorded 100 concurrent claims in {:?}", elapsed);
+    println!("    Throughput: {:.2} claims/sec", 100.0 / elapsed.as_secs_f64());
     
     // Verify both processors have claims recorded
     let routing_stats = orchestrator.get_rate_limit_stats("routing").await;
     let storage_stats = orchestrator.get_rate_limit_stats("storage").await;
     
-    println!("   ✓ Routing claims: {}", routing_stats.claims_in_last_hour);
-    println!("   ✓ Storage claims: {}", storage_stats.claims_in_last_hour);
+    println!("    Routing claims: {}", routing_stats.claims_in_last_hour);
+    println!("    Storage claims: {}", storage_stats.claims_in_last_hour);
     
     assert!(routing_stats.claims_in_last_hour > 0);
     assert!(storage_stats.claims_in_last_hour > 0);
@@ -153,7 +153,7 @@ async fn test_concurrent_claim_recording() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_stats_queries() -> Result<()> {
-    println!("\n🧪 Load Test: Concurrent stats queries");
+    println!("\n Load Test: Concurrent stats queries");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -190,9 +190,9 @@ async fn test_concurrent_stats_queries() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed 200 concurrent stat queries in {:?}", elapsed);
-    println!("   ✓ Stats retrieved: {}", stats_retrieved);
-    println!("   ✓ Throughput: {:.2} queries/sec", 200.0 / elapsed.as_secs_f64());
+    println!("    Processed 200 concurrent stat queries in {:?}", elapsed);
+    println!("    Stats retrieved: {}", stats_retrieved);
+    println!("    Throughput: {:.2} queries/sec", 200.0 / elapsed.as_secs_f64());
     
     assert_eq!(stats_retrieved, 200, "All queries should retrieve stats");
     
@@ -201,7 +201,7 @@ async fn test_concurrent_stats_queries() -> Result<()> {
 
 #[tokio::test]
 async fn test_rate_limiter_under_burst_load() -> Result<()> {
-    println!("\n🧪 Load Test: Rate limiter under burst load");
+    println!("\n Load Test: Rate limiter under burst load");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -244,9 +244,9 @@ async fn test_rate_limiter_under_burst_load() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed 100 burst claims in {:?}", elapsed);
-    println!("   ✓ Allowed: {}, Rate limited: {}", allowed, rate_limited);
-    println!("   ✓ Rate limiter correctly enforced limits");
+    println!("    Processed 100 burst claims in {:?}", elapsed);
+    println!("    Allowed: {}, Rate limited: {}", allowed, rate_limited);
+    println!("    Rate limiter correctly enforced limits");
     
     // Should enforce rate limit
     assert!(allowed <= 10, "Should not exceed max_claims_per_hour");
@@ -257,7 +257,7 @@ async fn test_rate_limiter_under_burst_load() -> Result<()> {
 
 #[tokio::test]
 async fn test_sustained_claim_load() -> Result<()> {
-    println!("\n🧪 Load Test: Sustained claim load over time");
+    println!("\n Load Test: Sustained claim load over time");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -294,15 +294,15 @@ async fn test_sustained_claim_load() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed {} sustained claims in {:?}", total_claims, elapsed);
-    println!("   ✓ Average throughput: {:.2} claims/sec", total_claims as f64 / elapsed.as_secs_f64());
+    println!("    Processed {} sustained claims in {:?}", total_claims, elapsed);
+    println!("    Average throughput: {:.2} claims/sec", total_claims as f64 / elapsed.as_secs_f64());
     
     // Verify claims are tracked
     let routing_stats = orchestrator.get_rate_limit_stats("routing").await;
     let storage_stats = orchestrator.get_rate_limit_stats("storage").await;
     let total_tracked = routing_stats.claims_in_last_hour + storage_stats.claims_in_last_hour;
     
-    println!("   ✓ Total tracked claims: {}", total_tracked);
+    println!("    Total tracked claims: {}", total_tracked);
     assert_eq!(total_tracked, total_claims as u32);
     
     Ok(())
@@ -310,7 +310,7 @@ async fn test_sustained_claim_load() -> Result<()> {
 
 #[tokio::test]
 async fn test_mixed_operation_load() -> Result<()> {
-    println!("\n🧪 Load Test: Mixed operations (checks + records + queries)");
+    println!("\n Load Test: Mixed operations (checks + records + queries)");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -352,13 +352,13 @@ async fn test_mixed_operation_load() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed 150 mixed operations in {:?}", elapsed);
-    println!("   ✓ Mix: 50 checks, 50 records, 50 queries");
-    println!("   ✓ Throughput: {:.2} ops/sec", 150.0 / elapsed.as_secs_f64());
+    println!("    Processed 150 mixed operations in {:?}", elapsed);
+    println!("    Mix: 50 checks, 50 records, 50 queries");
+    println!("    Throughput: {:.2} ops/sec", 150.0 / elapsed.as_secs_f64());
     
     // System should remain consistent
     let stats = orchestrator.get_all_rate_limit_stats().await;
-    println!("   ✓ Final state: routing={}, storage={}", 
+    println!("    Final state: routing={}, storage={}", 
         stats.routing.claims_in_last_hour,
         stats.storage.claims_in_last_hour);
     
@@ -367,7 +367,7 @@ async fn test_mixed_operation_load() -> Result<()> {
 
 #[tokio::test]
 async fn test_multiple_orchestrators_concurrent() -> Result<()> {
-    println!("\n🧪 Load Test: Multiple orchestrators under load");
+    println!("\n Load Test: Multiple orchestrators under load");
     
     let network1 = create_mock_network_component();
     let blockchain1 = create_mock_blockchain();
@@ -409,15 +409,15 @@ async fn test_multiple_orchestrators_concurrent() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Processed 100 operations (2 orchestrators) in {:?}", elapsed);
+    println!("    Processed 100 operations (2 orchestrators) in {:?}", elapsed);
     
     // Verify independence
     let stats1 = orchestrator1.get_rate_limit_stats("routing").await;
     let stats2 = orchestrator2.get_rate_limit_stats("routing").await;
     
-    println!("   ✓ Orchestrator 1 claims: {}", stats1.claims_in_last_hour);
-    println!("   ✓ Orchestrator 2 claims: {}", stats2.claims_in_last_hour);
-    println!("   ✓ Orchestrators remain independent under load");
+    println!("    Orchestrator 1 claims: {}", stats1.claims_in_last_hour);
+    println!("    Orchestrator 2 claims: {}", stats2.claims_in_last_hour);
+    println!("    Orchestrators remain independent under load");
     
     assert_eq!(stats1.claims_in_last_hour, 50);
     assert_eq!(stats2.claims_in_last_hour, 50);
@@ -427,7 +427,7 @@ async fn test_multiple_orchestrators_concurrent() -> Result<()> {
 
 #[tokio::test]
 async fn test_rate_limiter_cleanup_under_load() -> Result<()> {
-    println!("\n🧪 Load Test: Rate limiter cleanup under sustained load");
+    println!("\n Load Test: Rate limiter cleanup under sustained load");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -456,13 +456,13 @@ async fn test_rate_limiter_cleanup_under_load() -> Result<()> {
     
     let elapsed = start.elapsed();
     
-    println!("   ✓ Recorded 100 claims in {:?}", elapsed);
+    println!("    Recorded 100 claims in {:?}", elapsed);
     
     // Query stats (triggers cleanup of old claims)
     let stats = orchestrator.get_rate_limit_stats("routing").await;
     
-    println!("   ✓ Current claims in last hour: {}", stats.claims_in_last_hour);
-    println!("   ✓ Cleanup mechanism working (all recent claims counted)");
+    println!("    Current claims in last hour: {}", stats.claims_in_last_hour);
+    println!("    Cleanup mechanism working (all recent claims counted)");
     
     assert_eq!(stats.claims_in_last_hour, 100, "Should track all recent claims");
     
@@ -471,7 +471,7 @@ async fn test_rate_limiter_cleanup_under_load() -> Result<()> {
 
 #[tokio::test]
 async fn test_performance_baseline() -> Result<()> {
-    println!("\n🧪 Load Test: Performance baseline measurement");
+    println!("\n Load Test: Performance baseline measurement");
     
     let network = create_mock_network_component();
     let blockchain = create_mock_blockchain();
@@ -504,7 +504,7 @@ async fn test_performance_baseline() -> Result<()> {
     let stats_elapsed = start.elapsed();
     let stats_throughput = 1000.0 / stats_elapsed.as_secs_f64();
     
-    println!("\n   📊 Performance Baseline:");
+    println!("\n    Performance Baseline:");
     println!("   ┌────────────────────────────────────────┐");
     println!("   │ check_rate_limit: {:.2} ops/sec     │", check_throughput);
     println!("   │ record_claim:     {:.2} ops/sec     │", record_throughput);
@@ -516,7 +516,7 @@ async fn test_performance_baseline() -> Result<()> {
     assert!(record_throughput > 1000.0, "record_claim should handle >1k ops/sec");
     assert!(stats_throughput > 1000.0, "get_stats should handle >1k ops/sec");
     
-    println!("   ✓ All operations meet performance baseline");
+    println!("    All operations meet performance baseline");
     
     Ok(())
 }

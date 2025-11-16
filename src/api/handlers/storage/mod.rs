@@ -283,7 +283,7 @@ impl StorageHandler {
                         0  // No purchase price for uploads
                     ) {
                         Ok(_) => {
-                            tracing::info!("✓ Registered content ownership: {} → {}", 
+                            tracing::info!(" Registered content ownership: {} → {}", 
                                 hex::encode(&content_hash), wallet_id_str);
                             true
                         }

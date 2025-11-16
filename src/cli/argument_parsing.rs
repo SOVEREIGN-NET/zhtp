@@ -305,7 +305,7 @@ Examples:
             .subcommand(Command::new("mesh")
                 .about("Show mesh network status"))
             .subcommand(Command::new("isp-bypass")
-                .about("Show ISP bypass status"))
+                .about("Show  status"))
             .subcommand(Command::new("test")
                 .about("Test network connectivity")))
         .arg(Arg::new("mesh-port")
@@ -317,7 +317,7 @@ Examples:
         
         .arg(Arg::new("pure-mesh")
             .long("pure-mesh")
-            .help("Run in pure mesh mode (complete ISP bypass)")
+            .help("Run in pure mesh mode (complete )")
             .action(clap::ArgAction::SetTrue))
         
         .arg(Arg::new("node-type")
@@ -668,7 +668,7 @@ networking protocols:
 • Satellite uplinks for global connectivity
 
 Key Features:
-• Complete ISP bypass - no traditional internet required
+• Complete  - no traditional internet required
 • Economic incentives for sharing connectivity
 • Global coverage through long-range relays
 • Zero-knowledge privacy for all communications

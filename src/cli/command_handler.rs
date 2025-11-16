@@ -576,7 +576,7 @@ async fn execute_network_command(command: NetworkCommand) -> Result<()> {
             }
         }
         NetworkCommand::IspBypass => {
-            println!(" Getting ISP bypass status...");
+            println!(" Getting  status...");
             
             let response = client
                 .get(&format!("{}/network/isp-bypass", base_url))
@@ -585,10 +585,10 @@ async fn execute_network_command(command: NetworkCommand) -> Result<()> {
                 
             if response.status().is_success() {
                 let result: serde_json::Value = response.json().await?;
-                println!("ISP Bypass Status:");
+                println!(" Status:");
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                println!("Failed to get ISP bypass status: {}", response.status());
+                println!("Failed to get  status: {}", response.status());
             }
         }
         NetworkCommand::Test => {

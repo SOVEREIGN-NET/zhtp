@@ -2,7 +2,7 @@
 
 ## Overview
 
-This documentation provides comprehensive coverage of the ZHTP (Zero-Knowledge Hypertext Transfer Protocol) node orchestrator system. ZHTP is a Internet replacement technology that provides complete ISP bypass through mesh networking, zero-knowledge privacy, economic incentives through Universal Basic Income, and decentralized governance.
+This documentation provides comprehensive coverage of the ZHTP (Zero-Knowledge Hypertext Transfer Protocol) node orchestrator system. ZHTP is a Internet replacement technology that provides complete  through mesh networking, zero-knowledge privacy, economic incentives through Universal Basic Income, and decentralized governance.
 
 ## Documentation Structure
 
@@ -119,7 +119,7 @@ cp configs/dev-node.toml my-config.toml
 # Start with custom config
 zhtp node start --config my-config.toml --port 9333
 
-# Pure mesh mode (ISP bypass)
+# Pure mesh mode ()
 zhtp node start --config configs/pure-mesh.toml --pure-mesh
 ```
 
@@ -206,7 +206,7 @@ zhtp node start --config configs/pure-mesh.toml --pure-mesh
 - Best for initial deployment and testing
 
 ### Pure Mesh Mode
-- Complete ISP bypass through mesh-only networking
+- Complete  through mesh-only networking
 - Maximum privacy and decentralization
 - Requires sufficient mesh peer density
 - Ultimate goal for complete internet replacement

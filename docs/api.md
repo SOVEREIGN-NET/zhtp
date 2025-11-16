@@ -173,7 +173,7 @@ Verifies an existing ZHTP identity and returns verification status.
 
 ## Network Operations
 
-### ISP Bypass Status
+###  Status
 
 **Endpoint**: `GET /network/isp-bypass`
 

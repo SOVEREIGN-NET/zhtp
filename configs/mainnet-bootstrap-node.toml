@@ -194,7 +194,7 @@ mesh_encryption = true
 bluetooth_enabled = false
 wifi_direct_enabled = false
 
-# ISP bypass features
+#  features
 tor_integration = false
 i2p_integration = false
 

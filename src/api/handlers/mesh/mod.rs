@@ -129,7 +129,7 @@ impl MeshHandler {
 
     /// POST /api/v1/mesh/create - Create a new mesh blockchain
     async fn create_mesh(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
-        info!("📡 API: Creating new mesh blockchain");
+        info!(" API: Creating new mesh blockchain");
 
         // Parse request body
         let create_req: CreateMeshRequest = match serde_json::from_slice(&request.body) {
@@ -165,7 +165,7 @@ impl MeshHandler {
                     message: format!("Mesh blockchain '{}' created successfully", create_req.name),
                 };
 
-                info!("✅ Mesh blockchain created (PLACEHOLDER): {}", mesh_id);
+                info!(" Mesh blockchain created (PLACEHOLDER): {}", mesh_id);
                 warn!("Mesh blockchain creation is currently a placeholder - implement mesh server methods");
                 Ok(ZhtpResponse::success(serde_json::to_vec(&response).unwrap(), None))
             }
@@ -174,7 +174,7 @@ impl MeshHandler {
 
     /// POST /api/v1/mesh/{mesh_id}/transaction - Submit transaction to mesh blockchain
     async fn submit_transaction(&self, request: ZhtpRequest, mesh_id: String) -> ZhtpResult<ZhtpResponse> {
-        info!("📡 API: Submitting transaction to mesh {}", mesh_id);
+        info!(" API: Submitting transaction to mesh {}", mesh_id);
 
         // Parse request body
         let tx_req: MeshTransactionRequest = match serde_json::from_slice(&request.body) {
@@ -215,7 +215,7 @@ impl MeshHandler {
                     message: "Transaction submitted successfully".to_string(),
                 };
 
-                info!("✅ Transaction {} submitted to mesh {} (PLACEHOLDER)", tx_hash, mesh_id);
+                info!(" Transaction {} submitted to mesh {} (PLACEHOLDER)", tx_hash, mesh_id);
                 warn!("Transaction submission is currently a placeholder");
                 Ok(ZhtpResponse::success(serde_json::to_vec(&response).unwrap(), None))
             }
@@ -224,7 +224,7 @@ impl MeshHandler {
 
     /// POST /api/v1/mesh/{mesh_id}/produce_block - Produce a new block on mesh blockchain
     async fn produce_block(&self, request: ZhtpRequest, mesh_id: String) -> ZhtpResult<ZhtpResponse> {
-        info!("📡 API: Producing block for mesh {}", mesh_id);
+        info!(" API: Producing block for mesh {}", mesh_id);
 
         // Parse request body (optional)
         let produce_req: ProduceBlockRequest = if !request.body.is_empty() {
@@ -258,7 +258,7 @@ impl MeshHandler {
                     message: format!("Block {} produced with {} transactions", block_height, tx_count),
                 };
 
-                info!("✅ Block {} produced for mesh {} (PLACEHOLDER)", block_height, mesh_id);
+                info!(" Block {} produced for mesh {} (PLACEHOLDER)", block_height, mesh_id);
                 warn!("Block production is currently a placeholder");
                 Ok(ZhtpResponse::success(serde_json::to_vec(&response).unwrap(), None))
             }
@@ -267,7 +267,7 @@ impl MeshHandler {
 
     /// GET /api/v1/mesh/{mesh_id}/status - Get mesh blockchain status
     async fn get_mesh_status(&self, mesh_id: String) -> ZhtpResult<ZhtpResponse> {
-        info!("📡 API: Getting status for mesh {}", mesh_id);
+        info!(" API: Getting status for mesh {}", mesh_id);
 
         // TODO: Implement mesh server status query
         // Placeholder implementation
@@ -292,14 +292,14 @@ impl MeshHandler {
             },
         };
 
-        info!("✅ Retrieved status for mesh {} (PLACEHOLDER)", mesh_id);
+        info!(" Retrieved status for mesh {} (PLACEHOLDER)", mesh_id);
         warn!("Mesh status query is currently a placeholder");
         Ok(ZhtpResponse::success(serde_json::to_vec(&response).unwrap(), None))
     }
 
     /// GET /api/v1/mesh/{mesh_id}/sync/proof - Get recursive sync proof for mesh
     async fn get_sync_proof(&self, mesh_id: String) -> ZhtpResult<ZhtpResponse> {
-        info!("📡 API: Getting sync proof for mesh {}", mesh_id);
+        info!(" API: Getting sync proof for mesh {}", mesh_id);
 
         // TODO: Implement mesh server sync proof retrieval
         // Placeholder implementation
@@ -318,7 +318,7 @@ impl MeshHandler {
             message: "Placeholder sync proof (O(1) verification not yet implemented)".to_string(),
         };
 
-        info!("✅ Retrieved sync proof for mesh {} (PLACEHOLDER)", mesh_id);
+        info!(" Retrieved sync proof for mesh {} (PLACEHOLDER)", mesh_id);
         warn!("Sync proof retrieval is currently a placeholder");
         Ok(ZhtpResponse::success(serde_json::to_vec(&response).unwrap(), None))
     }
@@ -330,7 +330,7 @@ impl ZhtpRequestHandler for MeshHandler {
         let path = &request.uri;
         let method = &request.method;
 
-        info!("🌐 MeshHandler: {} {}", method, path);
+        info!(" MeshHandler: {} {}", method, path);
 
         // Route based on path and method
         match (method, path.as_str()) {

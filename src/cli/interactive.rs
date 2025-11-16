@@ -190,7 +190,7 @@ impl InteractiveShell {
             }
 
             for (category, commands) in categories {
-                println!("🔹 {}", category);
+                println!(" {}", category);
                 for command in commands {
                     if let Some(info) = self.commands.get(command) {
                         println!("   {:<15} - {}", command, info.description);
@@ -439,7 +439,7 @@ impl InteractiveShell {
                 println!("   Mode: Hybrid (Mesh + TCP/IP)");
                 println!("   Connected Peers: [Placeholder]");
                 println!("   Protocols: Bluetooth LE, WiFi Direct, LoRaWAN");
-                println!("   ISP Bypass: Partial");
+                println!("   : Partial");
             }
             "peers" => self.show_peers().await?,
             _ => println!("Unknown mesh command: {}", args[0]),

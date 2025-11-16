@@ -339,7 +339,7 @@ mesh_only = true
 ```
 
 **Characteristics:**
-- Complete ISP bypass
+- Complete 
 - Mesh-only networking
 - Maximum privacy and decentralization
 - Requires sufficient mesh density

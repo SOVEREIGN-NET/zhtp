@@ -65,6 +65,9 @@ impl ZhtpRequestHandler for IdentityHandler {
             (ZhtpMethod::Post, "/api/v1/identity/citizenship/apply") => {
                 self.handle_citizenship_application(request).await
             }
+            (ZhtpMethod::Post, "/api/v1/identity/sign") => {
+                self.handle_sign_message(request).await
+            }
             _ => {
                 Ok(ZhtpResponse::error(
                     ZhtpStatus::NotFound,
@@ -189,10 +192,37 @@ impl IdentityHandler {
             // Generate a temporary keypair (in production, use citizen's actual keypair)
             let keypair = generate_keypair().map_err(|e| anyhow::anyhow!("Failed to generate keypair: {}", e))?;
             
+            // ========================================================================
+            // CRITICAL FIX: Create welcome bonus UTXO output (5,000 ZHTP)
+            // This creates an actual spendable UTXO on the blockchain, not just a
+            // record in the identity layer. Without this, users cannot spend tokens.
+            // ========================================================================
+            use lib_blockchain::transaction::TransactionOutput;
+            
+            let identity_id_hex = citizenship_result.identity_id.to_string();
+            let welcome_bonus_amount = citizenship_result.welcome_bonus.bonus_amount;
+            
+            tracing::info!(" Creating welcome bonus UTXO: {} ZHTP for identity {}", 
+                          welcome_bonus_amount, &identity_id_hex[..16]);
+            
+            // Create UTXO output for welcome bonus
+            // The recipient is the identity hash (32 bytes) - same as what genesis uses
+            let welcome_bonus_output = TransactionOutput {
+                commitment: lib_blockchain::types::hash::blake3_hash(
+                    format!("welcome_bonus_commitment_{}_{}", identity_id_hex, welcome_bonus_amount).as_bytes()
+                ),
+                note: lib_blockchain::types::hash::blake3_hash(
+                    format!("welcome_bonus_note_{}", identity_id_hex).as_bytes()
+                ),
+                recipient: PublicKey::new(citizenship_result.identity_id.as_bytes().to_vec()),
+            };
+            
+            let outputs = vec![welcome_bonus_output];
+            
             // Create transaction WITHOUT signature first to get the hash for signing
             let temp_transaction = Transaction::new_identity_registration(
                 identity_transaction_data.clone(),
-                vec![], // No outputs needed for identity registration
+                outputs.clone(), // Include welcome bonus output
                 Signature {
                     signature: Vec::new(), // Empty signature for hash calculation
                     public_key: PublicKey::new(Vec::new()), // Empty public key for hash calculation
@@ -212,7 +242,7 @@ impl IdentityHandler {
             // Create the final blockchain transaction with proper signature
             let transaction = Transaction::new_identity_registration(
                 identity_transaction_data,
-                vec![], // No outputs needed for identity registration
+                outputs, //  Include welcome bonus UTXO output
                 Signature {
                     signature: crypto_signature.signature, // cryptographic signature over tx hash
                     public_key: PublicKey::new(keypair.public_key.dilithium_pk.to_vec()), // public key
@@ -417,12 +447,12 @@ impl IdentityHandler {
     
     /// Submit a transaction to the shared blockchain
     async fn submit_transaction_to_blockchain(&self, transaction: Transaction) -> Result<String> {
-        tracing::info!("📝 Getting shared blockchain instance for transaction submission...");
+        tracing::info!(" Getting shared blockchain instance for transaction submission...");
         
         // Get the global blockchain instance
         match crate::runtime::blockchain_provider::get_global_blockchain().await {
             Ok(shared_blockchain) => {
-                tracing::info!("✅ Got global blockchain, acquiring write lock...");
+                tracing::info!(" Got global blockchain, acquiring write lock...");
                 
                 // Add timeout to prevent infinite blocking
                 match tokio::time::timeout(
@@ -430,7 +460,7 @@ impl IdentityHandler {
                     shared_blockchain.write()
                 ).await {
                     Ok(mut blockchain) => {
-                        tracing::info!("✅ Write lock acquired, adding transaction to mempool...");
+                        tracing::info!(" Write lock acquired, adding transaction to mempool...");
                         
                         // Add transaction to pending pool
                         blockchain.add_pending_transaction(transaction.clone())?;
@@ -440,12 +470,12 @@ impl IdentityHandler {
                         
                         // Explicitly drop lock
                         drop(blockchain);
-                        tracing::info!("✅ Write lock released");
+                        tracing::info!(" Write lock released");
                         
                         Ok(tx_hash)
                     }
                     Err(_) => {
-                        tracing::error!("❌ TIMEOUT: Failed to acquire write lock on blockchain after 10 seconds!");
+                        tracing::error!(" TIMEOUT: Failed to acquire write lock on blockchain after 10 seconds!");
                         tracing::error!("   This indicates a deadlock - another task is holding the lock");
                         Err(anyhow::anyhow!("Blockchain write lock timeout - possible deadlock"))
                     }
@@ -460,7 +490,7 @@ impl IdentityHandler {
     
     /// Submit a wallet registration transaction to the blockchain
     async fn submit_wallet_to_blockchain(&self, wallet_data: lib_blockchain::transaction::WalletTransactionData) -> Result<String> {
-        use lib_blockchain::transaction::Transaction;
+        use lib_blockchain::transaction::{Transaction, TransactionOutput};
         use lib_blockchain::integration::{Signature, PublicKey, SignatureAlgorithm};
         
         // Generate keypair for wallet transaction signature
@@ -471,10 +501,42 @@ impl IdentityHandler {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         
+        // ========================================================================
+        // CRITICAL FIX: Create dust UTXO for wallet (1 micro-ZHTP = 0.00000001 ZHTP)
+        // This establishes the wallet on-chain and allows it to receive transactions
+        // Cost is minimal: 3 micro-ZHTP per user for 3 wallets
+        // ========================================================================
+        let dust_amount = 1u64; // 1 micro-ZHTP (0.00000001 ZHTP)
+        let wallet_id_hex = hex::encode(wallet_data.wallet_id.as_bytes());
+        
+        tracing::info!("💳 Creating dust UTXO for {} wallet: {} micro-ZHTP", 
+                      wallet_data.wallet_type, dust_amount);
+        
+        // Create dust UTXO output
+        // Use owner identity ID as recipient (same as welcome bonus)
+        let recipient_identity = if let Some(owner_id) = wallet_data.owner_identity_id {
+            owner_id.as_bytes().to_vec()
+        } else {
+            // Fallback: use wallet ID itself
+            wallet_data.wallet_id.as_bytes().to_vec()
+        };
+        
+        let wallet_dust_output = TransactionOutput {
+            commitment: lib_blockchain::types::hash::blake3_hash(
+                format!("wallet_init_commitment_{}_{}", wallet_id_hex, dust_amount).as_bytes()
+            ),
+            note: lib_blockchain::types::hash::blake3_hash(
+                format!("wallet_init_note_{}", wallet_id_hex).as_bytes()
+            ),
+            recipient: PublicKey::new(recipient_identity),
+        };
+        
+        let outputs = vec![wallet_dust_output];
+        
         // Create temporary transaction to get hash for signing
         let temp_transaction = Transaction::new_wallet_registration(
             wallet_data.clone(),
-            vec![], // Empty outputs
+            outputs.clone(), // Include dust output
             Signature {
                 signature: vec![0; 2420], // Temporary signature
                 public_key: PublicKey::new(keypair.public_key.dilithium_pk.to_vec()),
@@ -494,7 +556,7 @@ impl IdentityHandler {
         // Create final signed transaction
         let transaction = Transaction::new_wallet_registration(
             wallet_data.clone(),
-            vec![], // Empty outputs
+            outputs, //  Include dust UTXO output
             Signature {
                 signature: crypto_signature.signature,
                 public_key: PublicKey::new(keypair.public_key.dilithium_pk.to_vec()),
@@ -511,5 +573,52 @@ impl IdentityHandler {
             wallet_data.wallet_type);
         
         Ok(tx_hash)
+    }
+    
+    /// Sign a message with an identity's private key
+    /// POST /api/v1/identity/sign
+    async fn handle_sign_message(&self, request: ZhtpRequest) -> Result<ZhtpResponse> {
+        #[derive(Deserialize)]
+        struct SignRequest {
+            identity_id: String,  // Identity ID (short hex format like "8972927464b621d2")
+            message: String,      // Message to sign
+        }
+        
+        // Parse request body
+        let sign_req: SignRequest = serde_json::from_slice(&request.body)
+            .map_err(|e| anyhow::anyhow!("Invalid sign request: {}", e))?;
+        
+        tracing::info!(" Signing message for identity: {}", sign_req.identity_id);
+        
+        // Parse identity ID from hex
+        let identity_id_bytes = hex::decode(&sign_req.identity_id)
+            .map_err(|e| anyhow::anyhow!("Invalid identity ID hex: {}", e))?;
+        let identity_hash = lib_crypto::Hash::from_bytes(&identity_id_bytes);
+        
+        // Get identity and sign message using identity manager
+        let manager = self.identity_manager.read().await;
+        let identity = manager.get_identity(&identity_hash)
+            .ok_or_else(|| anyhow::anyhow!("Identity not found: {}", sign_req.identity_id))?;
+        
+        // Sign the message using identity manager (which has access to private keys)
+        let signature = manager.sign_message_for_identity(&identity_hash, sign_req.message.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to sign message: {}", e))?;
+        
+        // Convert signature to hex
+        let signature_hex = hex::encode(&signature.signature);
+        
+        tracing::info!(" Message signed successfully (signature length: {} bytes)", signature.signature.len());
+        
+        // Return response
+        let response_body = json!({
+            "success": true,
+            "identity_id": sign_req.identity_id,
+            "message": sign_req.message,
+            "signature": signature_hex,
+            "signature_algorithm": "CRYSTALS-Dilithium2",
+            "public_key": hex::encode(&identity.public_key),
+        });
+        
+        Ok(ZhtpResponse::json(&response_body, None)?)
     }
 }

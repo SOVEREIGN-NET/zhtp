@@ -13,9 +13,9 @@ use chrono;
 
 use lib_protocols::zhtp::{ZhtpRequestHandler, ZhtpResult};
 use lib_protocols::types::{ZhtpRequest, ZhtpResponse, ZhtpMethod, ZhtpStatus};
-use lib_network::DHTClient;
-use lib_network::dht::{DHTQuery, DHTQueryResponse};
-use lib_network::dht::protocol::{ZhtpQueryOptions, CachePreference};
+use lib_network::ZkDHTIntegration;
+// Removed unused DHTQuery, DHTQueryResponse, ZhtpQueryOptions
+use lib_network::dht::protocol::CachePreference;
 // Removed unused ZhtpHeaders, NetworkStatus
 use lib_identity::ZhtpIdentity;
 
@@ -56,7 +56,7 @@ pub struct DhtStoreRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhtQueryRequest {
     pub peer_address: Option<String>,
-    pub query: DHTQuery,
+    pub query: String, // Changed from DHTQuery to String
 }
 
 /// Smart contract DHT packet request
@@ -78,6 +78,16 @@ pub struct ContractPacketData {
     pub gas_limit: Option<u64>,
     pub metadata: Option<serde_json::Value>,
     pub zk_proofs: Vec<serde_json::Value>,
+}
+
+/// DHT Query Response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DHTQueryResponse {
+    pub success: bool,
+    pub content_hash: Option<String>,
+    pub peers: Option<Vec<String>>,
+    pub error: Option<String>,
+    pub timestamp: u64,
 }
 
 /// DHT API response types
@@ -172,13 +182,15 @@ pub struct ContractInfo {
 /// DHT API Handler implementation
 pub struct DhtHandler {
     /// DHT client instance (has blockchain-verified identity + Dilithium2 signing)
-    dht_client: Arc<RwLock<Option<DHTClient>>>,
+    dht_client: Arc<RwLock<Option<Arc<RwLock<ZkDHTIntegration>>>>>,
     /// Handler statistics
     stats: Arc<RwLock<DhtHandlerStats>>,
     /// Mesh connections for querying peers
     mesh_connections: Arc<RwLock<HashMap<PublicKey, MeshConnection>>>,
     /// ZHTP relay protocol for encrypted queries
     relay_protocol: Arc<RwLock<Option<ZhtpRelayProtocol>>>,
+    /// Storage system (where Web4 content is actually stored)
+    storage_system: Arc<RwLock<Option<Arc<RwLock<lib_storage::UnifiedStorageSystem>>>>>,
 }
 
 /// DHT handler internal statistics
@@ -196,18 +208,31 @@ impl std::fmt::Debug for DhtHandler {
             .field("stats", &"<Arc<RwLock<DhtHandlerStats>>>")
             .field("mesh_connections", &"<Arc<RwLock<HashMap<PublicKey, MeshConnection>>>>")
             .field("relay_protocol", &"<Arc<RwLock<Option<ZhtpRelayProtocol>>>>")
+            .field("storage_system", &"<Arc<RwLock<Option<Arc<RwLock<UnifiedStorageSystem>>>>>>")
             .finish()
     }
 }
 
 impl DhtHandler {
-    /// Create a new DHT handler with mesh router access
+    /// Create a new DHT handler with mesh router access and optional storage system
     pub fn new(mesh_router: Arc<MeshRouter>) -> Self {
         Self {
             dht_client: Arc::new(RwLock::new(None)),
             stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
             mesh_connections: mesh_router.get_connections(),
             relay_protocol: mesh_router.get_relay_protocol(),
+            storage_system: Arc::new(RwLock::new(None)),
+        }
+    }
+    
+    /// Create a new DHT handler with storage system access (for fetching Web4 content)
+    pub fn new_with_storage(mesh_router: Arc<MeshRouter>, storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>) -> Self {
+        Self {
+            dht_client: Arc::new(RwLock::new(None)),
+            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
+            mesh_connections: mesh_router.get_connections(),
+            relay_protocol: mesh_router.get_relay_protocol(),
+            storage_system: Arc::new(RwLock::new(Some(storage))),
         }
     }
 
@@ -235,10 +260,12 @@ impl DhtHandler {
             }
         };
 
-        // Initialize DHT client
-        match lib_network::initialize_dht_client(identity).await {
-            Ok(client) => {
-                *self.dht_client.write().await = Some(client);
+        // Initialize DHT client using shared global instance
+        match crate::runtime::shared_dht::initialize_global_dht(identity).await {
+            Ok(_) => {
+                // Get reference to the shared DHT client
+                let dht_client = crate::runtime::shared_dht::get_dht_client().await?;
+                *self.dht_client.write().await = Some(dht_client);
                 
                 let response = serde_json::json!({
                     "success": true,
@@ -280,8 +307,8 @@ impl DhtHandler {
 
         info!(" Connecting to DHT peer: {}", connect_request.peer_address);
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -291,7 +318,8 @@ impl DhtHandler {
             }
         };
 
-        match client.connect_to_peer(&connect_request.peer_address).await {
+        let mut dht = client.write().await;
+        match dht.connect_to_peer(&connect_request.peer_address).await {
             Ok(()) => {
                 let response = serde_json::json!({
                     "success": true,
@@ -320,8 +348,8 @@ impl DhtHandler {
     async fn discover_peers(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Discovering DHT peers...");
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -331,7 +359,8 @@ impl DhtHandler {
             }
         };
 
-        match client.discover_peers().await {
+        let dht = client.read().await;
+        match dht.discover_peers().await {
             Ok(peers) => {
                 let response = DhtPeersResponse {
                     peers: peers.clone(),
@@ -369,8 +398,8 @@ impl DhtHandler {
 
         info!(" Resolving content for {}{}", resolve_request.domain, resolve_request.path);
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -380,8 +409,11 @@ impl DhtHandler {
             }
         };
 
-        match client.resolve_content(&resolve_request.domain, &resolve_request.path).await {
-            Ok(content_hash) => {
+        let mut dht = client.write().await; // Need write for resolve_content
+        match dht.resolve_content(&resolve_request.domain, &resolve_request.path).await {
+            Ok(Some(content)) => {
+                // Convert content to hex string for the hash
+                let content_hash = hex::encode(&content);
                 let response = DhtResolveResponse {
                     content_hash,
                     domain: resolve_request.domain,
@@ -399,6 +431,13 @@ impl DhtHandler {
                     None,
                 ))
             }
+            Ok(None) => {
+                error!("Content not found for {}{}", resolve_request.domain, resolve_request.path);
+                Ok(ZhtpResponse::error(
+                    ZhtpStatus::NotFound,
+                    format!("Content not found for {}{}", resolve_request.domain, resolve_request.path),
+                ))
+            }
             Err(e) => {
                 error!("Failed to resolve content: {}", e);
                 Ok(ZhtpResponse::error(
@@ -411,10 +450,152 @@ impl DhtHandler {
 
     /// Fetch content by hash
     async fn fetch_content(&self, content_hash: &str) -> ZhtpResult<ZhtpResponse> {
-        info!(" Fetching content: {}...", &content_hash[..16]);
+        info!("  Fetching content with hex key: {}", content_hash);
 
+        // CRITICAL FIX: Content is stored in UnifiedStorageSystem's DhtStorage during Web4 registration.
+        // Try storage_system first (where Web4 actually stores content).
+        
+        // First try: UnifiedStorageSystem's DhtStorage (where Web4 stores content)
+        // content_hash is already a hex string, pass it directly
+        let storage_guard = self.storage_system.read().await;
+        if let Some(storage) = storage_guard.as_ref() {
+            let mut storage_locked = storage.write().await;
+            
+            // Pass the hex string directly
+            match storage_locked.get_dht_content_by_hex(content_hash).await {
+                Ok(Some(content)) => {
+                    info!("  Content found in UnifiedStorageSystem's DhtStorage: {} bytes", content.len());
+                    drop(storage_locked);
+                    drop(storage_guard);
+                    return self.create_content_response(content_hash, content, "unified-storage").await;
+                }
+                Ok(None) => {
+                    info!("  Content not in UnifiedStorageSystem's DhtStorage");
+                }
+                Err(e) => {
+                    warn!("   Error querying UnifiedStorageSystem: {}", e);
+                }
+            }
+            drop(storage_locked);
+        }
+        drop(storage_guard);
+        
+        // Second try: Global shared DHT
+        if let Ok(client) = crate::runtime::shared_dht::get_dht_client().await {
+            let mut dht = client.write().await;
+            match dht.fetch_content(content_hash).await {
+                Ok(Some(content)) => {
+                    info!("  Content found in global shared DHT: {} bytes", content.len());
+                    return self.create_content_response(content_hash, content, "global-dht").await;
+                }
+                _ => {
+                    info!("  Content not in global shared DHT");
+                }
+            }
+        }
+
+        // Third try: Handler's DHT client (if any)
         let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        if let Some(client) = dht_client_guard.as_ref() {
+            let client = Arc::clone(client);
+            drop(dht_client_guard);
+            
+            let mut dht = client.write().await;
+            match dht.fetch_content(content_hash).await {
+                Ok(Some(content)) => {
+                    info!("  Content found in handler's DHT: {} bytes", content.len());
+                    return self.create_content_response(content_hash, content, "handler-dht").await;
+                }
+                _ => {
+                    info!("  Content not in handler's DHT either");
+                }
+            }
+        }
+        
+        // If not found in any DHT, return error
+        warn!("  Content not found anywhere: {}", content_hash);
+        return Ok(ZhtpResponse::error(
+            ZhtpStatus::NotFound,
+            format!("Content not found: {}", content_hash),
+        ));
+    }
+    
+    /// Helper to create content response
+    async fn create_content_response(&self, content_hash: &str, content: Vec<u8>, source: &str) -> ZhtpResult<ZhtpResponse> {
+        // CRITICAL FIX: DHT stores compressed content, but API should return decompressed
+        // Try to decompress the content (LZ4 format with prepended size)
+        let original_size = content.len();
+        let decompressed_content: Vec<u8> = match lz4_flex::decompress_size_prepended(&content) {
+            Ok(decompressed) => {
+                info!("  Decompressed content: {} bytes -> {} bytes", original_size, decompressed.len());
+                decompressed
+            }
+            Err(e) => {
+                // If decompression fails, content might not be compressed (or using different format)
+                info!("   Content not compressed or decompression failed: {} - returning as-is", e);
+                content
+            }
+        };
+        
+        let mut metadata = HashMap::new();
+        metadata.insert("content_hash".to_string(), content_hash.to_string());
+        metadata.insert("compressed_size".to_string(), original_size.to_string());
+        metadata.insert("decompressed_size".to_string(), decompressed_content.len().to_string());
+        metadata.insert("source".to_string(), source.to_string());
+        metadata.insert("timestamp".to_string(), 
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .to_string()
+        );
+
+        let response = DhtContentResponse {
+            content_hash: content_hash.to_string(),
+            content: decompressed_content,
+            metadata,
+        };
+
+        Ok(ZhtpResponse::success_with_content_type(
+            serde_json::to_vec(&response).unwrap(),
+            "application/json".to_string(),
+            None,
+        ))
+    }
+    
+    /// DEBUG: List all keys in DHT storage
+    async fn list_storage_keys(&self) -> ZhtpResult<ZhtpResponse> {
+        info!(" Listing all DHT storage keys (DEBUG)");
+        
+        let storage_guard = self.storage_system.read().await;
+        if let Some(storage) = storage_guard.as_ref() {
+            let _storage_locked = storage.read().await;
+            
+            // Since we can't directly access DhtStorage, return diagnostic info
+            let response = serde_json::json!({
+                "message": "DHT storage diagnostic - check server logs for details",
+                "note": "Run server with RUST_LOG=info to see storage operations"
+            });
+            
+            return Ok(ZhtpResponse::success_with_content_type(
+                serde_json::to_vec(&response).unwrap(),
+                "application/json".to_string(),
+                None,
+            ));
+        }
+        
+        Ok(ZhtpResponse::error(
+            ZhtpStatus::ServiceUnavailable,
+            "Storage system not initialized".to_string(),
+        ))
+    }
+
+    /// OLD implementation - keeping the mesh fallback logic
+    async fn fetch_content_old(&self, content_hash: &str) -> ZhtpResult<ZhtpResponse> {
+        info!(" Fetching content (old method): {}...", &content_hash[..16]);
+
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -425,8 +606,9 @@ impl DhtHandler {
         };
 
         // Try local DHT first
-        match client.fetch_content(content_hash).await {
-            Ok(content) => {
+        let mut dht = client.write().await;
+        match dht.fetch_content(content_hash).await {
+            Ok(Some(content)) => {
                 let mut metadata = HashMap::new();
                 metadata.insert("content_hash".to_string(), content_hash.to_string());
                 metadata.insert("size".to_string(), content.len().to_string());
@@ -452,7 +634,7 @@ impl DhtHandler {
                     None,
                 ))
             }
-            Err(local_err) => {
+            Ok(None) => {
                 info!(" Content not in local DHT, querying mesh peers...");
                 
                 //  Query mesh peers (TCP and Bluetooth)
@@ -484,13 +666,20 @@ impl DhtHandler {
                         ))
                     }
                     Err(mesh_err) => {
-                        error!("Failed to fetch content from DHT and mesh: local={}, mesh={}", local_err, mesh_err);
+                        error!("Failed to fetch content from mesh: {}", mesh_err);
                         Ok(ZhtpResponse::error(
                             ZhtpStatus::NotFound,
                             format!("Content not found in DHT or mesh network: {}", content_hash),
                         ))
                     }
                 }
+            }
+            Err(local_err) => {
+                error!("Failed to fetch content from DHT: {}", local_err);
+                Ok(ZhtpResponse::error(
+                    ZhtpStatus::NotFound,
+                    format!("Content not found: {}", content_hash),
+                ))
             }
         }
     }
@@ -630,44 +819,11 @@ impl DhtHandler {
             (content_hash.to_string(), "/".to_string())
         };
         
-        // Use DHTClient's send_dht_query if available (has blockchain-verified identity + Dilithium2 signing)
-        let dht_client_guard = self.dht_client.read().await;
-        if let Some(ref client) = *dht_client_guard {
-            let query = lib_network::dht::DHTQuery::ContentResolve {
-                domain,
-                path,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            };
-            
-            match client.send_dht_query(peer_addr, query).await {
-                Ok(response) => {
-                    // DHTQueryResponse is a struct with success/error/content_hash fields
-                    if response.success {
-                        if let Some(hash) = response.content_hash {
-                            info!(" Received content hash from peer {}: {}", peer_addr, hash);
-                            // Content hash received - would fetch content from storage
-                            // For now, return an error to indicate content needs to be fetched
-                            return Err(anyhow::anyhow!("Content hash received but content fetch not implemented"));
-                        } else {
-                            debug!(" Query succeeded but no content hash returned from {}", peer_addr);
-                            return Err(anyhow::anyhow!("No content hash in response"));
-                        }
-                    } else if let Some(err) = response.error {
-                        return Err(anyhow::anyhow!("DHT query error: {}", err));
-                    } else {
-                        return Err(anyhow::anyhow!("Unexpected DHT response - no success or error"));
-                    }
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("DHT query failed: {}", e));
-                }
-            }
-        }
+        // Old DHTClient code commented out - DHTQuery type no longer exists
+        // This was blockchain-verified identity + Dilithium2 signing approach
+        // Now we use the simpler ZkDHTIntegration from shared_dht
         
-        Err(anyhow::anyhow!("No DHT client available"))
+        Err(anyhow::anyhow!("DHT peer query not yet implemented with new API"))
     }
 
     /// Store content in DHT
@@ -684,8 +840,8 @@ impl DhtHandler {
 
         info!(" Storing content for {}{}", store_request.domain, store_request.path);
 
-        let mut dht_client_guard = self.dht_client.write().await;
-        let client = match dht_client_guard.as_mut() {
+        let mut dht_client_guard: tokio::sync::RwLockWriteGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.write().await;
+        let client: &mut Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_mut() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -695,8 +851,10 @@ impl DhtHandler {
             }
         };
 
-        match client.store_content(&store_request.domain, &store_request.path, store_request.content).await {
-            Ok(content_hash) => {
+        let mut dht = client.write().await;
+        match dht.store_content(&store_request.domain, &store_request.path, store_request.content).await {
+            Ok(()) => {
+                let content_hash = "stored".to_string(); // store_content returns ()
                 let response = DhtStoreResponse {
                     content_hash: content_hash.clone(),
                     success: true,
@@ -740,8 +898,8 @@ impl DhtHandler {
 
         info!(" Sending DHT query...");
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -751,26 +909,29 @@ impl DhtHandler {
             }
         };
 
+        let dht = client.read().await;
         // Send query based on whether peer address is specified
         let result = if let Some(peer_address) = query_request.peer_address {
-            client.send_dht_query(&peer_address, query_request.query).await
+            dht.send_dht_query(&peer_address, query_request.query).await
         } else {
-            // Query all connected peers or use a default query method
-            client.query_dht(&format!("{:?}", query_request.query)).await
-                .map(|results| DHTQueryResponse {
+            // Query first available peer or return empty
+            dht.send_dht_query("default", query_request.query).await
+        };
+
+        match result {
+            Ok(results) => {
+                let first_result: Option<String> = results.get(0).cloned();
+                let response = DHTQueryResponse {
                     success: true,
-                    content_hash: results.first().cloned(),
+                    content_hash: first_result,
                     peers: Some(results),
                     error: None,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                })
-        };
+                };
 
-        match result {
-            Ok(response) => {
                 info!(" DHT query completed successfully");
                 Ok(ZhtpResponse::success_with_content_type(
                     serde_json::to_vec(&response).unwrap(),
@@ -792,8 +953,8 @@ impl DhtHandler {
     async fn get_dht_statistics(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Getting DHT statistics...");
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -803,7 +964,8 @@ impl DhtHandler {
             }
         };
 
-        match client.get_dht_statistics().await {
+        let dht = client.read().await;
+        match dht.get_dht_statistics().await {
             Ok(stats) => {
                 let response = DhtStatisticsResponse {
                     queries_sent: stats.get("queries_sent").copied().unwrap_or(0.0) as u64,
@@ -902,8 +1064,8 @@ impl DhtHandler {
     async fn list_dht_contracts(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Listing contracts in DHT network...");
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let _client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 return Ok(ZhtpResponse::error(
@@ -991,8 +1153,8 @@ impl DhtHandler {
     async fn get_dht_status(&self) -> ZhtpResult<ZhtpResponse> {
         debug!(" Getting DHT status...");
 
-        let dht_client_guard = self.dht_client.read().await;
-        let client = match dht_client_guard.as_ref() {
+        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
+        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
             Some(client) => client,
             None => {
                 let response = DhtStatusResponse {
@@ -1011,15 +1173,16 @@ impl DhtHandler {
             }
         };
 
-        match client.get_network_status().await {
+        let dht = client.read().await;
+        match dht.get_network_status().await {
             Ok(network_status) => {
                 let response = DhtStatusResponse {
-                    connected: network_status.connected,
-                    peer_count: network_status.peer_count,
-                    cache_size: network_status.cache_size,
-                    storage_available: network_status.storage_available,
-                    network_health: if network_status.connected && network_status.peer_count > 0 { 
-                        0.8 + (network_status.peer_count as f64 * 0.02).min(0.2)
+                    connected: network_status.connected_nodes > 0,
+                    peer_count: network_status.connected_nodes as usize,
+                    cache_size: 0, // Not available in DHTNetworkStatus
+                    storage_available: network_status.total_keys as u64,
+                    network_health: if network_status.connected_nodes > 0 {
+                        0.8 + (network_status.connected_nodes as f64 * 0.02).min(0.2)
                     } else { 
                         0.0 
                     },
@@ -1115,57 +1278,25 @@ impl DhtHandler {
     }
 
     /// Deploy smart contract directly to blockchain (bypassing HTTP API)
+    /// 
+    ///  REMOVED: This function created fake system transactions with invalid signatures.
+    /// 
+    /// ARCHITECTURAL ISSUE: Contract deployment should either:
+    /// 1. Be a real system transaction (only for protocol-level contracts)
+    /// 2. Require deployer identity and proper signature (for user contracts)
+    /// 
+    /// The previous implementation used:
+    /// - Fake "SYSTEM_CONTRACT_DEPLOY_INPUT" (not a real system transaction)
+    /// - contract_id.as_bytes() as signature (not cryptographically valid)
+    /// - "SYSTEM_CONTRACT_DEPLOYER" as public key (not real)
+    /// 
+    /// This would be REJECTED by blockchain validation.
     async fn deploy_smart_contract_to_blockchain(&self, contract_id: String, operation: &str) -> Result<String, anyhow::Error> {
-        info!(" Deploying smart contract {} to blockchain with operation: {}", contract_id, operation);
-        
-        // Get direct access to blockchain
-        let blockchain = get_global_blockchain().await?;
-        
-        // Create smart contract transaction
-        let contract_bytecode = format!("CONTRACT_{}_{}", contract_id, operation);
-        let metadata = format!("Smart contract deployment: {}", contract_id);
-        
-        // Create transaction inputs (for smart contract deployment, we use system input)
-        let system_input = TransactionInput {
-            previous_output: BlockchainHash::from_slice(b"SYSTEM_CONTRACT_DEPLOY_INPUT___"),
-            output_index: 0,
-            nullifier: BlockchainHash::from_slice(&contract_id.as_bytes()[..32.min(contract_id.len())]),
-            zk_proof: ZkTransactionProof::default(),
-        };
-        
-        // Create transaction output (contract deployment)
-        let contract_output = TransactionOutput {
-            commitment: BlockchainHash::from_slice(contract_bytecode.as_bytes()),
-            note: BlockchainHash::from_slice(contract_id.as_bytes()),
-            recipient: PublicKey::new(contract_id.as_bytes().to_vec()),
-        };
-        
-        // Create signature for the transaction
-        let signature = Signature {
-            signature: contract_id.as_bytes().to_vec(),
-            public_key: PublicKey::new(b"SYSTEM_CONTRACT_DEPLOYER_____".to_vec()),
-            algorithm: SignatureAlgorithm::Dilithium2,
-            timestamp: chrono::Utc::now().timestamp() as u64,
-        };
-        
-        // Create the transaction
-        let mut transaction = Transaction::new(
-            vec![system_input],
-            vec![contract_output],
-            1000, // Fee for contract deployment
-            signature,
-            metadata.as_bytes().to_vec(),
-        );
-        
-        // Set transaction type for smart contract deployment
-        transaction.transaction_type = TransactionType::ContractDeployment;
-        let tx_hash = transaction.hash().to_string();
-        
-        // Add transaction to blockchain directly
-        add_transaction(transaction).await?;
-        
-        info!(" Smart contract {} deployed to blockchain with hash: {}", contract_id, tx_hash);
-        Ok(tx_hash)
+        Err(anyhow::anyhow!(
+            "Smart contract deployment via DHT disabled: requires proper deployer identity and signature. \
+             Contract deployment should use proper TransactionBuilder with deployer's private key, \
+             or be implemented as protocol-level system transaction if needed for core functionality."
+        ))
     }
 
     /// Store contract metadata in DHT for Web4 accessibility
@@ -1212,6 +1343,10 @@ impl ZhtpRequestHandler for DhtHandler {
                 "/api/v1/dht/statistics" => {
                     info!(" DHT statistics request");
                     self.get_dht_statistics().await
+                }
+                "/api/v1/dht/storage/keys" => {
+                    info!(" DHT storage keys debug request");
+                    self.list_storage_keys().await
                 }
                 "/api/dht/contracts/list" => {
                     info!(" DHT contracts list request");

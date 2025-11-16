@@ -158,7 +158,7 @@ impl ProtocolFilter {
             bail!("Protocol '{}' is not allowed on this bootstrap node. Only blockchain protocols are supported.", protocol);
         }
         
-        debug!("✅ Protocol allowed: {} (purpose: {})", protocol, purpose);
+        debug!(" Protocol allowed: {} (purpose: {})", protocol, purpose);
         Ok(())
     }
     

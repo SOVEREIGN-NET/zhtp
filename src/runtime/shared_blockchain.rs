@@ -179,9 +179,9 @@ impl SharedBlockchainService {
                         // Create a new block
                         let new_block = Block::new(header, transactions);
                         
-                        match blockchain.add_block(new_block.clone()) {
+                        match blockchain.add_block_with_proof(new_block.clone()).await {
                             Ok(()) => {
-                                info!("Block mined successfully at height {}", blockchain.height);
+                                info!("Block mined successfully at height {} with recursive proof", blockchain.height);
                                 Ok(new_block)
                             }
                             Err(e) => {

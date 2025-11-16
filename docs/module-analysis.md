@@ -284,7 +284,7 @@ config/
 
 **Mesh Modes**:
 - **Hybrid**: Mesh primary with TCP/IP fallback
-- **Pure**: Complete ISP bypass, mesh-only
+- **Pure**: Complete , mesh-only
 - **Development**: Local testing with simulation
 
 ## Runtime System Analysis (src/runtime/)

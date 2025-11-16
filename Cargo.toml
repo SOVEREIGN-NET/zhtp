@@ -54,6 +54,7 @@ md5 = "0.7"
 bincode = "1.3"
 blake3 = "1.5"
 rpassword = "7.3"  # Secure password input
+lz4_flex = "0.11"  # LZ4 compression for DHT content decompression
 
 # System integration
 sysinfo = "0.31"

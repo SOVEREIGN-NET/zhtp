@@ -241,7 +241,7 @@ pub enum ComponentMessage {
 ## Network Architecture
 
 ### Mesh Networking
-- **Pure Mesh Mode**: Complete ISP bypass using only mesh protocols
+- **Pure Mesh Mode**: Complete  using only mesh protocols
 - **Hybrid Mode**: Mesh networking with TCP/IP fallback
 - **Network Isolation**: Optional isolation for pure mesh operation
 

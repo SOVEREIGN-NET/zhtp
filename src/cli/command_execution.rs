@@ -239,7 +239,7 @@ async fn execute_network_info(context: &CommandContext) -> Result<String> {
             info.push_str(&format!("  • Status: {}\n", if mesh_status.is_connected { "Connected " } else { "Disconnected " }));
             info.push_str(&format!("  • Mesh Nodes: {}\n", mesh_status.mesh_size));
             info.push_str(&format!("  • Routing Efficiency: {:.1}%\n", mesh_status.routing_efficiency * 100.0));
-            info.push_str(&format!("  • ISP Bypass: {}\n", if mesh_status.isp_bypass_active { "Active " } else { "Inactive " }));
+            info.push_str(&format!("  • : {}\n", if mesh_status.isp_bypass_active { "Active " } else { "Inactive " }));
         },
         Err(e) => info.push_str(&format!("Failed to get mesh status: {}\n", e)),
     }
@@ -263,7 +263,7 @@ async fn execute_mesh_status(context: &CommandContext) -> Result<String> {
             result.push_str(&format!("Peer Count: {}\n", peer_count));
             result.push_str(&format!("Mesh Size: {}\n", status.mesh_size));
             result.push_str(&format!(" Routing Efficiency: {:.1}%\n", status.routing_efficiency * 100.0));
-            result.push_str(&format!(" ISP Bypass: {}\n", if status.isp_bypass_active { "Active " } else { "Inactive " }));
+            result.push_str(&format!(" : {}\n", if status.isp_bypass_active { "Active " } else { "Inactive " }));
             result.push_str(&format!("Signal Strength: {:.1}%\n", status.signal_strength * 100.0));
             result.push_str(&format!(" Data Throughput: {:.2} MB/s\n", status.throughput as f64 / 1_000_000.0));
             
@@ -798,7 +798,7 @@ async fn execute_version() -> Result<String> {
  ZHTP Network Node v{}
 
 Internet Replacement System
-• Complete ISP bypass through mesh networking
+• Complete  through mesh networking
 • Zero-knowledge privacy for all communications
 • Universal Basic Income through network participation
 • Post-quantum cryptographic security

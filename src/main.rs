@@ -11,7 +11,7 @@
 //! - Web4 protocol stack
 //! 
 //! The ZHTP node can operate in two modes:
-//! - Pure Mesh: Complete ISP bypass using only mesh protocols
+//! - Pure Mesh: Complete  using only mesh protocols
 //! - Hybrid: Mesh networking with TCP/IP fallback for transition
 
 use anyhow::Result;

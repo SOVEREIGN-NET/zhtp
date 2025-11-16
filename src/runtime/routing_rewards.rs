@@ -96,7 +96,7 @@ impl RoutingRewardProcessor {
     /// The processor will run indefinitely until the handle is aborted.
     pub fn start(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         info!("═══════════════════════════════════════════════════════");
-        info!("🚀 Starting Routing Reward Processor");
+        info!(" Starting Routing Reward Processor");
         info!("═══════════════════════════════════════════════════════");
         info!("   Check interval: {:?}", self.config.check_interval);
         info!("   Minimum threshold: {} ZHTP", self.config.minimum_threshold);
@@ -116,13 +116,13 @@ impl RoutingRewardProcessor {
                 match self.process_routing_rewards(cycle).await {
                     Ok(claimed) => {
                         if claimed {
-                            info!("✅ Cycle {} completed: Rewards claimed", cycle);
+                            info!(" Cycle {} completed: Rewards claimed", cycle);
                         } else {
-                            debug!("⏭️  Cycle {} completed: Below threshold", cycle);
+                            debug!("  Cycle {} completed: Below threshold", cycle);
                         }
                     }
                     Err(e) => {
-                        error!("❌ Cycle {} failed: {}", cycle, e);
+                        error!(" Cycle {} failed: {}", cycle, e);
                     }
                 }
             }
@@ -141,21 +141,21 @@ impl RoutingRewardProcessor {
     /// - Failed to add transaction to blockchain
     /// - Failed to reset reward counter
     async fn process_routing_rewards(&self, cycle: u64) -> Result<bool> {
-        info!("🔍 Checking routing rewards (cycle {})...", cycle);
+        info!(" [ROUTING] Checking routing rewards (cycle {})...", cycle);
         
         // Get current routing statistics
         let stats = self.network_component.get_routing_stats().await;
         
-        info!("   📊 Stats:");
-        info!("      Tokens earned: {} ZHTP", stats.theoretical_tokens_earned);
-        info!("      Bytes routed: {} bytes ({:.2} MB)", 
+        info!("   [ROUTING]  Stats:");
+        info!("      [ROUTING] Tokens earned: {} SOV", stats.theoretical_tokens_earned);
+        info!("      [ROUTING] Bytes routed: {} bytes ({:.2} MB)", 
               stats.bytes_routed, 
               stats.bytes_routed as f64 / 1_048_576.0);
-        info!("      Messages routed: {}", stats.messages_routed);
+        info!("      [ROUTING] Messages routed: {}", stats.messages_routed);
         
         // Check if reward meets minimum threshold
         if stats.theoretical_tokens_earned < self.config.minimum_threshold {
-            debug!("   ⏭️  Below threshold ({} < {}), skipping claim", 
+            debug!("     Below threshold ({} < {}), skipping claim", 
                   stats.theoretical_tokens_earned, 
                   self.config.minimum_threshold);
             return Ok(false);
@@ -168,18 +168,20 @@ impl RoutingRewardProcessor {
         );
         
         if claim_amount < stats.theoretical_tokens_earned {
-            warn!("   ⚠️  Capping claim: {} -> {} ZHTP (excess will be claimed next cycle)", 
+            warn!("     Capping claim: {} -> {} SOV (excess will be claimed next cycle)", 
                   stats.theoretical_tokens_earned, 
                   claim_amount);
         }
         
-        info!("   💰 Creating routing reward transaction: {} ZHTP", claim_amount);
+        info!("    Creating routing reward transaction: {} SOV", claim_amount);
+        
+        info!("    Creating routing reward transaction: {} ZHTP", claim_amount);
         
         // Get this node's unique identifier for reward attribution
         let node_id = self.network_component.get_node_id().await
             .ok_or_else(|| anyhow::anyhow!("Cannot get node ID: mesh server not initialized"))?;
         
-        info!("   🔑 Node ID: {}", hex::encode(&node_id));
+        info!("    Node ID: {}", hex::encode(&node_id));
         
         // Create reward transaction with actual node ID and claim amount
         let reward_tx = BlockchainComponent::create_reward_transaction(
@@ -190,7 +192,7 @@ impl RoutingRewardProcessor {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create reward transaction: {}", e))?;
         
-        info!("   📝 Transaction created: {:?}", reward_tx.hash());
+        info!("    Transaction created: {:?}", reward_tx.hash());
         
         // Validate transaction before submitting
         self.validate_reward_transaction(claim_amount, &reward_tx).await?;
@@ -206,19 +208,19 @@ impl RoutingRewardProcessor {
                 .map_err(|e| anyhow::anyhow!("Failed to add transaction to blockchain: {}", e))?;
         }
         
-        info!("   ✅ Transaction added to pending pool");
+        info!("    Transaction added to pending pool");
         
         // Reset counter (only reset claimed amount if capped)
         if claim_amount < stats.theoretical_tokens_earned {
             // TODO: Partial reset - need to add this to mesh server
-            warn!("   ⚠️  Partial reset not yet implemented - resetting all");
+            warn!("     Partial reset not yet implemented - resetting all");
         }
         
         self.network_component.reset_routing_rewards().await?;
         
-        info!("   🔄 Reward counter reset");
+        info!("    Reward counter reset");
         info!("═══════════════════════════════════════════════════════");
-        info!("🎉 Routing Reward Claimed Successfully!");
+        info!(" Routing Reward Claimed Successfully!");
         info!("   Amount: {} ZHTP", claim_amount);
         info!("   Cycle: {}", cycle);
         info!("   Next check: {:?}", self.config.check_interval);
@@ -245,7 +247,7 @@ impl RoutingRewardProcessor {
         claim_amount: u64,
         transaction: &lib_blockchain::Transaction,
     ) -> Result<()> {
-        info!("   🔍 Validating transaction...");
+        info!("    Validating transaction...");
         
         // 1. Validate reward amount is reasonable
         const MAX_SINGLE_CLAIM: u64 = 1_000_000; // 1M ZHTP maximum per claim
@@ -270,7 +272,7 @@ impl RoutingRewardProcessor {
             ));
         }
         
-        info!("      ✓ Amount valid: {} ZHTP", claim_amount);
+        info!("       Amount valid: {} ZHTP", claim_amount);
         
         // 2. Verify blockchain is available
         let shared_blockchain = crate::runtime::blockchain_provider::get_global_blockchain()
@@ -286,7 +288,7 @@ impl RoutingRewardProcessor {
                 return Err(anyhow::anyhow!("Blockchain not initialized: no blocks"));
             }
             
-            info!("      ✓ Blockchain available: {} blocks", chain_height);
+            info!("       Blockchain available: {} blocks", chain_height);
         }
         
         // 3. Validate transaction structure
@@ -295,8 +297,8 @@ impl RoutingRewardProcessor {
             return Err(anyhow::anyhow!("Invalid transaction: zero hash"));
         }
         
-        info!("      ✓ Transaction structure valid");
-        info!("   ✅ Validation passed");
+        info!("       Transaction structure valid");
+        info!("    Validation passed");
         
         Ok(())
     }

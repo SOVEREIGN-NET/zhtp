@@ -8,7 +8,7 @@ use std::fmt;
 /// Mesh networking operation modes
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeshMode {
-    /// Pure mesh mode - Complete ISP bypass using only mesh protocols
+    /// Pure mesh mode - Complete  using only mesh protocols
     PureMesh,
     /// Hybrid mode - Mesh networking with TCP/IP fallback for transition
     Hybrid,
@@ -167,7 +167,7 @@ pub enum DiscoveryMethod {
     DnsDiscovery,
 }
 
-/// Configuration for ISP bypass functionality
+/// Configuration for  functionality
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IspBypassConfig {
     pub enabled: bool,
@@ -198,7 +198,7 @@ impl IspBypassConfig {
                     return Err("Internet fallback not allowed in pure mesh mode".to_string());
                 }
                 if !self.enabled {
-                    return Err("ISP bypass must be enabled in pure mesh mode".to_string());
+                    return Err(" must be enabled in pure mesh mode".to_string());
                 }
             }
             MeshMode::Hybrid => {

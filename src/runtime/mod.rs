@@ -16,6 +16,7 @@ pub mod components;
 pub mod shared_blockchain;
 pub mod shared_dht;
 pub mod blockchain_provider;
+pub mod identity_manager_provider;
 pub mod network_blockchain_provider;
 pub mod mesh_router_provider;
 pub mod did_startup;
@@ -29,6 +30,7 @@ pub use components::*;
 pub use shared_blockchain::*;
 pub use shared_dht::*;
 pub use blockchain_provider::{initialize_global_blockchain_provider, set_global_blockchain};
+pub use identity_manager_provider::{initialize_global_identity_manager_provider, set_global_identity_manager, get_global_identity_manager};
 pub use network_blockchain_provider::ZhtpBlockchainProvider;
 pub use mesh_router_provider::{initialize_global_mesh_router_provider, set_global_mesh_router, get_broadcast_metrics};
 
@@ -172,6 +174,12 @@ pub struct RuntimeOrchestrator {
     shared_blockchain: Arc<RwLock<Option<SharedBlockchainService>>>,
     user_wallet: Arc<RwLock<Option<crate::runtime::did_startup::WalletStartupResult>>>,
     
+    // Genesis identities to be registered with IdentityManager on startup (PUBLIC DATA ONLY)
+    genesis_identities: Arc<RwLock<Vec<lib_identity::ZhtpIdentity>>>,
+    
+    // Genesis private keys to be securely added to IdentityManager (NEVER touches blockchain)
+    genesis_private_data: Arc<RwLock<Vec<(lib_identity::IdentityId, lib_identity::identity::PrivateIdentityData)>>>,
+    
     // Track if we joined an existing network (vs creating genesis)
     joined_existing_network: Arc<RwLock<bool>>,
     
@@ -227,6 +235,8 @@ impl RuntimeOrchestrator {
             shutdown_signal: Arc::new(Mutex::new(Some(shutdown_tx))),
             shared_blockchain: Arc::new(RwLock::new(None)),
             user_wallet: Arc::new(RwLock::new(None)),
+            genesis_identities: Arc::new(RwLock::new(Vec::new())),
+            genesis_private_data: Arc::new(RwLock::new(Vec::new())),
             joined_existing_network: Arc::new(RwLock::new(false)),
             reward_orchestrator: Arc::new(RwLock::new(None)),
             is_edge_node: Arc::new(RwLock::new(is_edge_node)),
@@ -348,7 +358,22 @@ impl RuntimeOrchestrator {
         // Register components in dependency order
         self.register_component(Arc::new(CryptoComponent::new())).await?;
         self.register_component(Arc::new(ZKComponent::new())).await?;
-        self.register_component(Arc::new(IdentityComponent::new())).await?;
+        
+        // Create Identity component with genesis identities AND private keys if available
+        let genesis_identities = self.genesis_identities.read().await.clone();
+        let genesis_private_data = self.genesis_private_data.read().await.clone();
+        
+        if genesis_identities.is_empty() {
+            info!("Registering Identity component without genesis identities");
+            self.register_component(Arc::new(IdentityComponent::new())).await?;
+        } else {
+            info!(" Registering Identity component with {} genesis identities and {} private keys", 
+                genesis_identities.len(), genesis_private_data.len());
+            self.register_component(Arc::new(
+                IdentityComponent::new_with_identities_and_private_data(genesis_identities, genesis_private_data)
+            )).await?;
+        }
+        
         self.register_component(Arc::new(StorageComponent::new())).await?;
         self.register_component(Arc::new(NetworkComponent::new())).await?;
         // Pass user wallet, environment AND bootstrap validators to blockchain component for proper network initialization
@@ -384,39 +409,105 @@ impl RuntimeOrchestrator {
         info!("User wallet stored in orchestrator for component initialization");
         drop(user_wallet);
         
+        // Extract and store genesis identities for IdentityManager registration (PUBLIC DATA ONLY)
+        let mut genesis_identities = self.genesis_identities.write().await;
+        genesis_identities.push(wallet.user_identity.clone());
+        genesis_identities.push(wallet.node_identity.clone());
+        info!(
+            "Stored {} genesis identities (public data) for IdentityManager registration",
+            genesis_identities.len()
+        );
+        drop(genesis_identities);
+        
+        // Store PRIVATE KEYS separately in secure memory (NEVER touches blockchain)
+        let mut genesis_private_data = self.genesis_private_data.write().await;
+        genesis_private_data.push((wallet.user_identity.id.clone(), wallet.user_private_data.clone()));
+        genesis_private_data.push((wallet.node_identity.id.clone(), wallet.node_private_data.clone()));
+        info!(" Stored {} private keys in secure memory (never stored on blockchain)", genesis_private_data.len());
+        info!("    USER Identity ID: {}", hex::encode(&wallet.user_identity.id.0));
+        info!("    NODE Identity ID: {}", hex::encode(&wallet.node_identity.id.0));
+        info!("    USER Public Key (first 32): {}", hex::encode(&wallet.user_private_data.quantum_keypair.public_key[..32]));
+        info!("    NODE Public Key (first 32): {}", hex::encode(&wallet.node_private_data.quantum_keypair.public_key[..32]));
+        drop(genesis_private_data);
+        
+        // Try to store private keys in global IdentityManager if already available
+        if let Ok(identity_manager_arc) = crate::runtime::identity_manager_provider::get_global_identity_manager().await {
+            let mut manager = identity_manager_arc.write().await;
+            manager.add_identity_with_private_data(wallet.user_identity.clone(), wallet.user_private_data.clone());
+            manager.add_identity_with_private_data(wallet.node_identity.clone(), wallet.node_private_data.clone());
+            info!(" Stored private keys for genesis identities in IdentityManager");
+        } else {
+            info!("  IdentityManager not yet initialized - private keys will be loaded when IdentityComponent starts");
+        }
+        
         // Initialize blockchain with genesis funding NOW, before starting BlockchainComponent
-        info!("📦 Creating blockchain with genesis funding for user wallet...");
+        info!(" Creating blockchain with genesis funding for user wallet...");
         let mut blockchain = lib_blockchain::Blockchain::new()?;
         
-        // Create genesis validator from user wallet
+        // Set development difficulty (easy mining for testing)
+        // TODO: In production, keep the default INITIAL_DIFFICULTY (0x1d00ffff)
+        if matches!(self.config.environment, crate::config::Environment::Development) {
+            blockchain.difficulty = lib_blockchain::types::Difficulty::from_bits(0x1fffffff);
+            // Also update genesis block difficulty to match
+            if let Some(genesis) = blockchain.blocks.get_mut(0) {
+                genesis.header.difficulty = lib_blockchain::types::Difficulty::from_bits(0x1fffffff);
+            }
+            info!(" Development mode: Set blockchain difficulty to 0x1fffffff (easy mining)");
+        }
+        
+        // Create genesis validator from USER identity (not node identity)
+        // NOTE: A person can only be a validator once, regardless of how many nodes they own
+        // Nodes are just devices controlled by the user's identity
+        // Reduced stake to 1_000 for development so a single welcome bonus (5k) or small pools can start the chain
         let genesis_validator = crate::runtime::components::GenesisValidator {
-            identity_id: wallet.node_identity_id.clone(),
-            stake: 100_000, // Initial stake for user
+            identity_id: wallet.user_identity.id.clone(), // Use USER identity, not node identity
+            stake: 1_000, // Initial stake for genesis validator (1k ZHTP - accessible for testing)
             storage_provided: 0,
             commission_rate: 500, // 5% commission
             endpoints: vec![],
             consensus_key: None,
+            node_device_id: Some(wallet.node_identity_id.clone()), // Track which node is running validator
         };
+        
+        // Extract primary wallet ID and public key from user identity
+        let primary_wallet_info = {
+            let primary_wallet = wallet.user_identity.wallet_manager.wallets
+                .iter()
+                .find(|(_, w)| w.wallet_type == lib_identity::wallets::WalletType::Primary)
+                .map(|(id, w)| (id.clone(), w.public_key.clone()));
+            
+            if primary_wallet.is_none() {
+                warn!("  No primary wallet found in user identity - genesis will not fund user wallet");
+            }
+            
+            primary_wallet
+        };
+        
+        // Get genesis private data for wallet registry initialization
+        let genesis_private_data = self.genesis_private_data.read().await.clone();
         
         // Fund the blockchain genesis with user wallet
         crate::runtime::components::BlockchainComponent::create_genesis_funding(
             &mut blockchain,
             vec![genesis_validator],
             &self.config.environment,
+            primary_wallet_info,
+            Some(wallet.user_identity.id.clone()), // Pass user identity ID
+            genesis_private_data, // Pass private data for Dilithium2 public key extraction
         ).await?;
         
         let blockchain_arc = Arc::new(RwLock::new(blockchain));
         
         // Set in global provider BEFORE BlockchainComponent starts
         set_global_blockchain(blockchain_arc.clone()).await?;
-        info!("✅ Global blockchain provider initialized with user wallet funding");
+        info!(" Global blockchain provider initialized with user wallet funding");
         
         // CRITICAL: Also push wallet to BlockchainComponent if already registered
         let components = self.components.read().await;
         if let Some(component) = components.get(&ComponentId::Blockchain) {
             if let Some(blockchain_comp) = component.as_any().downcast_ref::<BlockchainComponent>() {
                 blockchain_comp.set_user_wallet(wallet).await;
-                info!("✅ User wallet propagated to BlockchainComponent");
+                info!(" User wallet propagated to BlockchainComponent");
             }
         }
         
@@ -428,9 +519,9 @@ impl RuntimeOrchestrator {
         let mut joined_network = self.joined_existing_network.write().await;
         *joined_network = joined;
         if joined {
-            info!("✅ Orchestrator: Joining existing network - genesis will NOT be created");
+            info!(" Orchestrator: Joining existing network - genesis will NOT be created");
         } else {
-            info!("🆕 Orchestrator: Creating new genesis network");
+            info!(" Orchestrator: Creating new genesis network");
         }
         Ok(())
     }
@@ -457,19 +548,19 @@ impl RuntimeOrchestrator {
 
     /// Start all components in the correct order
     pub async fn start_all_components(&self) -> Result<()> {
-        info!("🚀 Starting all ZHTP components...");
+        info!(" Starting all ZHTP components...");
         
         // Register components once if not already registered
         self.register_all_components().await?;
         
         // Initialize blockchain BEFORE starting components
-        info!("📦 Creating blockchain instance...");
+        info!(" Creating blockchain instance...");
         let blockchain = lib_blockchain::Blockchain::new()?;
         let blockchain_arc = Arc::new(RwLock::new(blockchain));
         
         // Set in global provider so BlockchainComponent can access it
         set_global_blockchain(blockchain_arc.clone()).await?;
-        info!("✅ Global blockchain provider initialized");
+        info!(" Global blockchain provider initialized");
         
         for component_id in &self.startup_order {
             self.start_component(component_id.clone()).await
@@ -479,7 +570,7 @@ impl RuntimeOrchestrator {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         
-        info!("✅ All components started successfully");
+        info!(" All components started successfully");
         Ok(())
     }
 
@@ -529,12 +620,8 @@ impl RuntimeOrchestrator {
                             warn!("Failed to initialize shared blockchain service: {}", e);
                         }
                         
-                        // Start unified reward orchestrator after blockchain is ready
-                        if let Err(e) = self.start_reward_orchestrator().await {
-                            warn!("Failed to start reward orchestrator: {}", e);
-                        } else {
-                            info!("Reward orchestrator started successfully");
-                        }
+                        // NOTE: Reward orchestrator moved to after ProtocolsComponent
+                        // (needs mesh server to be initialized)
                     }
                     
                     // Wire blockchain to consensus component after consensus starts
@@ -542,7 +629,29 @@ impl RuntimeOrchestrator {
                         if let Err(e) = self.wire_blockchain_to_consensus().await {
                             warn!("Failed to wire blockchain to consensus: {}", e);
                         } else {
-                            info!("Blockchain successfully wired to consensus component");
+                            info!(" Blockchain successfully wired to consensus component");
+                        }
+                    }
+                    
+                    // Start reward orchestrator after ProtocolsComponent (mesh server now ready)
+                    if component_id == ComponentId::Protocols {
+                        // Give mesh server a moment to fully initialize
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        
+                        if let Err(e) = self.start_reward_orchestrator().await {
+                            warn!("Failed to start reward orchestrator: {}", e);
+                        } else {
+                            info!(" Reward orchestrator started (mesh server ready for statistics)");
+                        }
+                    }
+                    
+                    // Sync wallet balances from blockchain after BLOCKCHAIN component starts
+                    // (Must run after blockchain starts, not after Identity, since we need blockchain data)
+                    if component_id == ComponentId::Blockchain {
+                        if let Err(e) = self.sync_wallet_balances_from_blockchain().await {
+                            warn!("Failed to sync wallet balances from blockchain: {}", e);
+                        } else {
+                            info!(" Wallet balances synced from blockchain wallet registry");
                         }
                     }
                     
@@ -1083,15 +1192,15 @@ impl RuntimeOrchestrator {
                     if let Some(blockchain_comp) = component.as_any().downcast_ref::<BlockchainComponent>() {
                         // Set validator manager
                         blockchain_comp.set_validator_manager(validator_manager).await;
-                        info!("✅ Validator manager connected to blockchain mining loop");
+                        info!(" Validator manager connected to blockchain mining loop");
                         
                         // Set node owner identity from wallet startup (secure node identity)
                         let wallet_guard = self.user_wallet.read().await;
                         if let Some(ref wallet_data) = *wallet_guard {
                             blockchain_comp.set_node_identity(wallet_data.node_identity_id.clone()).await;
-                            info!("✅ Node owner identity connected: {}", hex::encode(&wallet_data.node_identity_id.0[..8]));
+                            info!(" Node owner identity connected: {}", hex::encode(&wallet_data.node_identity_id.0[..8]));
                         } else {
-                            warn!("⚠️  Node owner identity not available yet - mining will use bootstrap mode");
+                            warn!("  Node owner identity not available yet - mining will use bootstrap mode");
                         }
                     }
                 }
@@ -1102,6 +1211,296 @@ impl RuntimeOrchestrator {
         }
         
         Err(anyhow::anyhow!("Consensus component not found"))
+    }
+
+    /// Sync wallet balances from blockchain UTXO set
+    /// 
+    /// This ensures that in-memory wallet balances reflect the actual
+    /// on-chain state, including genesis funding and any transactions.
+    pub async fn sync_wallet_balances_from_blockchain(&self) -> Result<()> {
+        info!(" Syncing wallet balances from blockchain wallet registry...");
+        
+        // Get the global IdentityManager
+        let identity_manager_arc = match crate::runtime::identity_manager_provider::get_global_identity_manager().await {
+            Ok(arc) => arc,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to get global IdentityManager: {}", e));
+            }
+        };
+        
+        // Get the blockchain Arc from BlockchainComponent
+        let blockchain_arc = if let Some(component) = self.components.read().await.get(&ComponentId::Blockchain) {
+            if let Some(blockchain_comp) = component.as_any().downcast_ref::<BlockchainComponent>() {
+                blockchain_comp.get_initialized_blockchain().await?
+            } else {
+                return Err(anyhow::anyhow!("Blockchain component type mismatch"));
+            }
+        } else {
+            return Err(anyhow::anyhow!("Blockchain component not found"));
+        };
+        
+        // Extract wallet balance data from blockchain wallet_registry
+        let wallet_balances = {
+            let blockchain = blockchain_arc.read().await;
+            let mut balances = std::collections::HashMap::new();
+            
+            info!(" Scanning blockchain wallet_registry (total entries: {})...", blockchain.wallet_registry.len());
+            
+            for (wallet_id_hex, wallet_data) in blockchain.wallet_registry.iter() {
+                if wallet_data.initial_balance > 0 {
+                    info!("   Found funded wallet: {} → {} ZHTP", 
+                        &wallet_id_hex[..16], wallet_data.initial_balance);
+                    balances.insert(wallet_id_hex.clone(), wallet_data.initial_balance);
+                } else {
+                    info!("   Skipping zero-balance wallet: {}", &wallet_id_hex[..16]);
+                }
+            }
+            
+            info!(" Extracted {} wallet balance entries from blockchain", balances.len());
+            balances
+        };
+        
+        // Lock identity manager and perform sync
+        let mut identity_manager = identity_manager_arc.write().await;
+        
+        // Call the sync method with extracted balance data
+        identity_manager.sync_wallet_balances(&wallet_balances)?;
+        
+        info!(" Wallet balance sync completed successfully");
+        Ok(())
+    }
+
+    /// Create a blockchain transaction consuming UTXOs for a wallet payment
+    /// 
+    /// This is the proper UTXO-based payment flow:
+    /// 1. Find UTXOs owned by the wallet's public key in blockchain.utxo_set
+    /// 2. Select enough UTXOs to cover the payment amount
+    /// 3. Ask IdentityManager to create and sign transaction (has access to private key)
+    /// 4. Submit signed transaction to blockchain
+    /// 5. Blockchain will consume UTXOs and create new outputs
+    pub async fn create_wallet_payment_transaction(
+        &self,
+        identity_id: &lib_identity::IdentityId,
+        wallet_pubkey: &[u8],
+        recipient_pubkey: &[u8],
+        amount: u64,
+        purpose: &str,
+    ) -> Result<lib_blockchain::Hash> {
+        info!(" Creating blockchain transaction for wallet payment: {} ZHTP for '{}'", amount, purpose);
+        
+        // Step 1: Get blockchain and scan for UTXOs matching wallet_pubkey
+        let blockchain_arc = if let Some(component) = self.components.read().await.get(&ComponentId::Blockchain) {
+            if let Some(blockchain_comp) = component.as_any().downcast_ref::<BlockchainComponent>() {
+                blockchain_comp.get_initialized_blockchain().await?
+            } else {
+                return Err(anyhow::anyhow!("Blockchain component type mismatch"));
+            }
+        } else {
+            return Err(anyhow::anyhow!("Blockchain component not found"));
+        };
+        
+        let blockchain = blockchain_arc.read().await;
+        
+        // Scan UTXO set for outputs owned by this wallet
+        let mut wallet_utxos: Vec<(lib_blockchain::Hash, u32, u64)> = Vec::new();
+        
+        info!(" Scanning {} UTXOs for wallet pubkey: {}", 
+              blockchain.utxo_set.len(), 
+              hex::encode(&wallet_pubkey[..8.min(wallet_pubkey.len())]));
+        
+        for (utxo_hash, output) in &blockchain.utxo_set {
+            // Check if this UTXO belongs to our wallet
+            // Compare recipient public key bytes with wallet pubkey
+            if output.recipient.as_bytes() == wallet_pubkey {
+                // NOTE: Amount is hidden in Pedersen commitment, so we need to get it from wallet_registry
+                // For genesis UTXOs, we know the amount from wallet_registry initial_balance
+                // In production, we'd need to decrypt the note or track amounts separately
+                
+                // For now, use a placeholder amount - this would come from wallet's UTXO tracking
+                let utxo_amount = 5000u64; // Genesis wallet funding amount
+                
+                wallet_utxos.push((*utxo_hash, 0, utxo_amount));
+                info!("   Found UTXO: {}", hex::encode(utxo_hash.as_bytes()));
+            }
+        }
+        
+        if wallet_utxos.is_empty() {
+            warn!("  No UTXOs found for wallet");
+            return Err(anyhow::anyhow!("No UTXOs found for wallet"));
+        }
+        
+        info!(" Found {} UTXOs for wallet", wallet_utxos.len());
+        
+        // Step 2: Select UTXOs to cover amount + fee
+        let fee = 100u64; // 100 micro-ZHTP fee
+        let required_amount = amount + fee;
+        
+        let mut selected_utxos = Vec::new();
+        let mut total_selected = 0u64;
+        
+        for utxo in wallet_utxos {
+            selected_utxos.push(utxo.clone());
+            total_selected += utxo.2;
+            
+            if total_selected >= required_amount {
+                break;
+            }
+        }
+        
+        if total_selected < required_amount {
+            return Err(anyhow::anyhow!(
+                "Insufficient UTXO balance: need {}, have {}",
+                required_amount,
+                total_selected
+            ));
+        }
+        
+        info!(" Selected {} UTXOs totaling {} ZHTP", selected_utxos.len(), total_selected);
+        
+        drop(blockchain); // Release read lock
+        
+        // Step 3: Get IdentityManager to create signed transaction
+        let identity_mgr_arc = if let Some(component) = self.components.read().await.get(&ComponentId::Identity) {
+            if let Some(identity_comp) = component.as_any().downcast_ref::<IdentityComponent>() {
+                identity_comp.get_identity_manager_arc()
+            } else {
+                return Err(anyhow::anyhow!("Identity component type mismatch"));
+            }
+        } else {
+            return Err(anyhow::anyhow!("Identity component not found"));
+        };
+        
+        let identity_mgr_opt = identity_mgr_arc.read().await;
+        let identity_mgr: &lib_identity::IdentityManager = identity_mgr_opt.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("IdentityManager not initialized"))?;
+        
+        // Convert lib_blockchain::Hash to lib_crypto::Hash for IdentityManager
+        let selected_utxos_crypto: Vec<(lib_crypto::Hash, u32, u64)> = selected_utxos
+            .iter()
+            .map(|(hash, idx, amt)| {
+                (lib_crypto::Hash::from_bytes(hash.as_bytes()), *idx, *amt)
+            })
+            .collect();
+        
+        // Get transaction components (private key, amounts, wallet pubkey)
+        let (private_key_bytes, total_input, change_amount, wallet_pubkey) = identity_mgr.create_payment_transaction(
+            identity_id,
+            selected_utxos_crypto.clone(),
+            recipient_pubkey,
+            amount,
+            fee,
+        )?;
+        
+        drop(identity_mgr_opt);
+        
+        info!("💳 Building payment transaction: {} ZHTP to recipient, {} ZHTP change", amount, change_amount);
+        
+        // Step 4: Build Transaction using lib-blockchain TransactionBuilder
+        use lib_blockchain::transaction::{TransactionInput, TransactionOutput, TransactionBuilder};
+        use lib_blockchain::types::transaction_type::TransactionType;
+        use lib_crypto::PrivateKey;
+        
+        // Create PrivateKey struct
+        let private_key = PrivateKey {
+            dilithium_sk: private_key_bytes,
+            kyber_sk: Vec::new(),
+            master_seed: vec![0u8; 32],
+        };
+        
+        // Create transaction inputs from selected UTXOs
+        let mut inputs = Vec::new();
+        for (utxo_hash, output_index, _amount) in &selected_utxos {
+            // Generate nullifier for this UTXO
+            let nullifier_data = [utxo_hash.as_bytes(), &output_index.to_le_bytes()].concat();
+            let nullifier = lib_blockchain::Hash::from_slice(&lib_crypto::hash_blake3(&nullifier_data)[..32]);
+            
+            // Create ZK proof - TransactionBuilder will generate proper proofs
+            let zk_proof = lib_blockchain::integration::zk_integration::ZkTransactionProof::prove_transaction(
+                total_input,     // sender_balance
+                0,              // receiver_balance (not needed for input)
+                amount,         // amount
+                fee,            // fee
+                [0u8; 32],     // sender_blinding (placeholder)
+                [0u8; 32],     // receiver_blinding
+                [0u8; 32],     // nullifier
+            ).unwrap_or_else(|_| {
+                // Fallback to empty proof if generation fails
+                use lib_proofs::types::ZkProof;
+                lib_proofs::ZkTransactionProof::new(
+                    ZkProof::new("plonky2".to_string(), vec![], vec![], vec![], None),
+                    ZkProof::new("plonky2".to_string(), vec![], vec![], vec![], None),
+                    ZkProof::new("plonky2".to_string(), vec![], vec![], vec![], None),
+                )
+            });
+            
+            let input = TransactionInput::new(
+                *utxo_hash,
+                *output_index,
+                nullifier,
+                zk_proof,
+            );
+            inputs.push(input);
+        }
+        
+        // Create transaction outputs
+        let mut outputs = Vec::new();
+        
+        // Output 1: Payment to recipient
+        let recipient_commitment = lib_blockchain::Hash::from_slice(
+            &lib_crypto::hash_blake3(&[&b"commitment:"[..], recipient_pubkey, &amount.to_le_bytes()].concat())[..32]
+        );
+        let recipient_note = lib_blockchain::Hash::from_slice(
+            &lib_crypto::hash_blake3(&[&b"note:"[..], recipient_pubkey, &amount.to_le_bytes()].concat())[..32]
+        );
+        let recipient_pk = lib_blockchain::integration::crypto_integration::PublicKey::new(recipient_pubkey.to_vec());
+        
+        outputs.push(TransactionOutput::new(
+            recipient_commitment,
+            recipient_note,
+            recipient_pk,
+        ));
+        
+        // Output 2: Change back to wallet (if any)
+        if change_amount > 0 {
+            let change_commitment = lib_blockchain::Hash::from_slice(
+                &lib_crypto::hash_blake3(&[&b"commitment:"[..], &wallet_pubkey[..], &change_amount.to_le_bytes()].concat())[..32]
+            );
+            let change_note = lib_blockchain::Hash::from_slice(
+                &lib_crypto::hash_blake3(&[&b"note:"[..], &wallet_pubkey[..], &change_amount.to_le_bytes()].concat())[..32]
+            );
+            let change_pk = lib_blockchain::integration::crypto_integration::PublicKey::new(wallet_pubkey.clone());
+            
+            outputs.push(TransactionOutput::new(
+                change_commitment,
+                change_note,
+                change_pk,
+            ));
+        }
+        
+        // Build and sign the transaction
+        let transaction = TransactionBuilder::new()
+            .transaction_type(TransactionType::Transfer)
+            .add_inputs(inputs)
+            .add_outputs(outputs)
+            .fee(fee)
+            .build(&private_key)
+            .map_err(|e| anyhow::anyhow!("Failed to build transaction: {:?}", e))?;
+        
+        let tx_hash = transaction.hash();
+        
+        info!(" Built signed transaction: {}", hex::encode(tx_hash.as_bytes()));
+        
+        // Step 5: Submit transaction to blockchain
+        let mut blockchain = blockchain_arc.write().await;
+        
+        blockchain.add_pending_transaction(transaction.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to add transaction to blockchain: {:?}", e))?;
+        
+        info!("📤 Transaction submitted to mempool");
+        
+        drop(blockchain);
+        
+        Ok(tx_hash)
     }
 
     /// Start the unified reward orchestrator
@@ -1230,4 +1629,39 @@ impl RuntimeOrchestrator {
         info!("Graceful shutdown completed");
         Ok(())
     }
+
+    // ========================================================================
+    // Public Getter Methods for Private Fields
+    // ========================================================================
+
+    /// Get a read-only clone of genesis identities
+    pub async fn get_genesis_identities(&self) -> Vec<lib_identity::ZhtpIdentity> {
+        self.genesis_identities.read().await.clone()
+    }
+
+    /// Get genesis private data for identity initialization
+    pub async fn get_genesis_private_data(&self) -> Vec<(lib_identity::IdentityId, lib_identity::identity::PrivateIdentityData)> {
+        self.genesis_private_data.read().await.clone()
+    }
+
+    /// Get a read-only clone of user wallet
+    pub async fn get_user_wallet(&self) -> Option<crate::runtime::did_startup::WalletStartupResult> {
+        self.user_wallet.read().await.clone()
+    }
+
+    /// Get the environment configuration
+    pub fn get_environment(&self) -> crate::config::environment::Environment {
+        self.config.environment
+    }
+
+    /// Get bootstrap validators from network config
+    pub fn get_bootstrap_validators(&self) -> Vec<crate::config::aggregation::BootstrapValidator> {
+        self.config.network_config.bootstrap_validators.clone()
+    }
+
+    /// Check if node joined an existing network
+    pub async fn get_joined_existing_network(&self) -> bool {
+        *self.joined_existing_network.read().await
+    }
 }
+

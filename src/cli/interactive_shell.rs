@@ -162,7 +162,7 @@ Welcome to ZHTP Network Node Interactive Shell
      ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝     
 
 Internet Replacement System
-• Complete ISP bypass through mesh networking
+• Complete  through mesh networking
 • Zero-knowledge privacy for all communications  
 • Universal Basic Income through network participation
 • Post-quantum cryptographic security

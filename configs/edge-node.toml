@@ -1,9 +1,9 @@
 # Mainnet Edge Node Configuration  
-# Optimized for mesh networking and ISP bypass on MAINNET
+# Optimized for mesh networking and  on MAINNET
 # Suitable for: Production mesh relays, rural connectivity, censorship resistance
 
 # Core Node Settings
-mesh_mode = "PureMesh"  # ISP bypass mode
+mesh_mode = "PureMesh"  #  mode
 security_level = "High"
 environment = "Mainnet"
 data_directory = "./data/mainnet-edge"  # Mainnet-specific directory
@@ -50,8 +50,8 @@ long_range_relays = true  # CRITICAL for pure mesh mode
 
 # Protocol-specific settings
 [network_config.bluetooth]
-use_classic = false        # ❌ Classic too power-hungry for edge nodes
-use_ble = true            # ✅ BLE only - battery-efficient
+use_classic = false        #  Classic too power-hungry for edge nodes
+use_ble = true            #  BLE only - battery-efficient
 ble_advertising = true    # Beacon mode for discovery
 ble_scan_interval_ms = 1000  # Scan every 1 second
 
@@ -115,7 +115,7 @@ service_discovery = true
 health_check_interval_ms = 45000
 cross_package_timeouts = { "network" = 20000, "routing" = 15000 }
 
-# ISP bypass specific settings
+#  specific settings
 [isp_bypass_config]
 enabled = true
 prefer_mesh_routes = true
