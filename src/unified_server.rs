@@ -6706,9 +6706,9 @@ impl ZhtpUnifiedServer {
         }
         
         // Binary mesh handshake detection (bincode format from local discovery)
-        // Bincode handshakes start with small numbers (version byte)
-        // and are typically 60-100 bytes for mesh handshakes
-        if buffer.len() >= 20 && buffer.len() < 200 {
+        // Bincode handshakes contain version byte + node_id + public_key + protocols
+        // With full cryptographic public keys, they can be 1000-2000 bytes
+        if buffer.len() >= 20 && buffer.len() < 4096 {
             // Try to deserialize as MeshHandshake
             if let Ok(_handshake) = bincode::deserialize::<lib_network::discovery::local_network::MeshHandshake>(buffer) {
                 return IncomingProtocol::ZhtpMeshTcp;

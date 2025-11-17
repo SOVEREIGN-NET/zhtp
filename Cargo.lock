@@ -2128,6 +2128,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2",
+ "socket2 0.5.10",
  "tokio",
  "tracing",
  "uuid",
