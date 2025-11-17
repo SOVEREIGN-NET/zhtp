@@ -393,6 +393,29 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 }
                 Err(e) => {
                     println!("\nℹ No existing ZHTP network found: {}", e);
+                    
+                    // EDGE NODES CANNOT CREATE GENESIS BLOCKS!
+                    if is_edge_node {
+                        return Err(anyhow::anyhow!(
+                            "\n❌ Edge Node Cannot Start Without Network\n\
+                             \n\
+                             Edge nodes must connect to an existing ZHTP network.\n\
+                             No peers were discovered on the local network.\n\
+                             \n\
+                             To fix this:\n\
+                             1. Start a full ZHTP node on your network first:\n\
+                                   zhtp node start\n\
+                             \n\
+                             2. Wait for the full node to create its genesis block\n\
+                             \n\
+                             3. Then start this edge node:\n\
+                                   zhtp node start --edge-mode\n\
+                             \n\
+                             Edge nodes sync headers from full nodes - they cannot\n\
+                             create their own blockchain.\n"
+                        ));
+                    }
+                    
                     println!("📝 Starting new genesis network...");
                     
                     // Tell orchestrator we're creating new network (create genesis)
@@ -731,9 +754,10 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     
     // Method 2: Check UDP multicast announcements
     println!("   → Method 2: UDP multicast peer discovery");
-    // INCREASED TIMEOUT: UDP multicast may need extra time on some networks
+    // INCREASED TIMEOUT: UDP multicast waits up to 35s for at least one broadcast cycle
+    // (Peers broadcast every 30 seconds, so we wait 35s to guarantee catching one)
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(10),
+        tokio::time::Duration::from_secs(40),  // 35s listen + 5s buffer
         discover_via_multicast()
     ).await {
         Ok(Ok(peers)) => {
@@ -787,7 +811,8 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     
     let mut discovered = Vec::new();
     let mut buf = [0u8; 1024];
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    // INCREASED: Wait up to 35 seconds to catch at least one broadcast cycle (peers broadcast every 30s)
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(35);
     
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
