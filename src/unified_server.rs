@@ -1706,12 +1706,23 @@ impl MeshRouter {
             lib_network::protocols::NetworkProtocol::UDP => {
                 // Use QUIC for all IP-based communication (replaces TCP/UDP)
                 let quic = self.quic_protocol.read().await;
+                let mut quic_success = false;
+                
                 if let Some(ref protocol) = *quic {
-                    protocol.send_to_peer(&peer_id.key_id, &serialized).await
-                        .context("Failed to send via QUIC")?;
-                    info!("✓ Sent {} bytes via QUIC (quantum-safe + TLS 1.3)", serialized.len());
-                } else {
-                    // Fallback to UDP if QUIC not available
+                    // Try QUIC first, but don't fail if it doesn't work - fallback to UDP
+                    match protocol.send_to_peer(&peer_id.key_id, &serialized).await {
+                        Ok(_) => {
+                            info!("✓ Sent {} bytes via QUIC (quantum-safe + TLS 1.3)", serialized.len());
+                            quic_success = true;
+                        }
+                        Err(e) => {
+                            warn!("⚠ QUIC send failed: {} - falling back to UDP", e);
+                        }
+                    }
+                }
+                
+                // Always try UDP fallback if QUIC failed or unavailable
+                if !quic_success {
                     let socket = self.udp_socket.read().await;
                     if let Some(ref sock) = *socket {
                         let peer_addr: SocketAddr = peer_address.parse()
@@ -1720,7 +1731,7 @@ impl MeshRouter {
                         sock.send_to(&serialized, peer_addr).await
                             .context("Failed to send UDP packet")?;
                         
-                        warn!("⚠ Sent {} bytes via UDP fallback (QUIC unavailable)", serialized.len());
+                        info!("✓ Sent {} bytes via UDP (QUIC unavailable/failed)", serialized.len());
                     } else {
                         return Err(anyhow::anyhow!("Neither QUIC nor UDP socket available"));
                     }
