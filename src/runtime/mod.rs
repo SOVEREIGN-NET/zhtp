@@ -441,8 +441,31 @@ impl RuntimeOrchestrator {
             info!("  IdentityManager not yet initialized - private keys will be loaded when IdentityComponent starts");
         }
         
-        // Initialize blockchain with genesis funding NOW, before starting BlockchainComponent
-        info!(" Creating blockchain with genesis funding for user wallet...");
+        // CRITICAL: Check if we're joining existing network - if so, DON'T create genesis!
+        let joined_existing = *self.joined_existing_network.read().await;
+        
+        if joined_existing {
+            // Joining existing network - blockchain should already be initialized for sync
+            info!(" Joining existing network - skipping genesis creation");
+            info!("  User wallet will be added to synced blockchain after sync completes");
+            
+            // Just store the wallet for later use, don't create blockchain
+            // The blockchain will be synced from network peers
+            
+            // CRITICAL: Push wallet to BlockchainComponent if already registered
+            let components = self.components.read().await;
+            if let Some(component) = components.get(&ComponentId::Blockchain) {
+                if let Some(blockchain_comp) = component.as_any().downcast_ref::<BlockchainComponent>() {
+                    blockchain_comp.set_user_wallet(wallet).await;
+                    info!(" User wallet propagated to BlockchainComponent for sync");
+                }
+            }
+            
+            return Ok(());
+        }
+        
+        // Creating NEW genesis network - initialize blockchain with genesis funding
+        info!(" Creating NEW genesis network with user wallet funding...");
         let mut blockchain = lib_blockchain::Blockchain::new()?;
         
         // Set development difficulty (easy mining for testing)
