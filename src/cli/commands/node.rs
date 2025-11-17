@@ -861,9 +861,14 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     
     // Get our local IP to filter out our own broadcasts
     let our_local_ip = match get_local_ip_address().await {
-        Ok(ip) => Some(ip),
+        Ok(ip) => {
+            eprintln!("     [MULTICAST DEBUG] Our local IP: {}", ip);
+            Some(ip)
+        },
         Err(_) => None,
     };
+    
+    eprintln!("     [MULTICAST DEBUG] Listening on 224.0.1.75:37775 for 35 seconds...");
     
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
@@ -871,10 +876,12 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
             socket.recv_from(&mut buf)
         ).await {
             Ok(Ok((len, addr))) => {
+                eprintln!("     [MULTICAST DEBUG] Received packet from {} ({} bytes)", addr, len);
                 if let Ok(announcement) = String::from_utf8(buf[..len].to_vec()) {
+                    eprintln!("     [MULTICAST DEBUG] Packet content: {}", announcement);
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&announcement) {
                         // Extract node_id and local_ip from announcement
-                        let node_id = parsed.get("node_id").and_then(|n| n.as_str());
+                        let _node_id = parsed.get("node_id").and_then(|n| n.as_str());
                         let local_ip = parsed.get("local_ip").and_then(|ip| ip.as_str());
                         
                         // Skip our own announcements (check local_ip)
@@ -905,6 +912,7 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
         }
     }
     
+    eprintln!("     [MULTICAST DEBUG] Discovery complete: found {} peers", discovered.len());
     Ok(discovered)
 }
 
