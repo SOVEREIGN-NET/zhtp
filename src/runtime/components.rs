@@ -894,7 +894,9 @@ impl NetworkComponent {
                 messages_routed: server.get_total_messages_routed().await,
             }
         } else {
-            warn!("Mesh server not initialized, returning default routing stats");
+            // NOTE: Mesh server is managed by ZhtpUnifiedServer, not NetworkComponent
+            // This is expected during startup before unified_server initializes
+            debug!("Mesh statistics not yet available (unified_server starting), returning defaults");
             RoutingRewardStats::default()
         }
     }
@@ -929,7 +931,9 @@ impl NetworkComponent {
         if let Some(ref server) = *self.mesh_server.read().await {
             Some(server.get_node_id())
         } else {
-            warn!("Cannot get node ID: mesh server not initialized");
+            // NOTE: Mesh server is managed by ZhtpUnifiedServer, not NetworkComponent
+            // This is expected during startup before unified_server initializes
+            debug!("Node ID not yet available (unified_server starting)");
             None
         }
     }
@@ -962,7 +966,9 @@ impl NetworkComponent {
                 storage_duration_hours: stats.storage_duration_hours,
             }
         } else {
-            warn!("Mesh server not initialized, returning default storage stats");
+            // NOTE: Mesh server is managed by ZhtpUnifiedServer, not NetworkComponent
+            // This is expected during startup before unified_server initializes
+            debug!("Mesh statistics not yet available (unified_server starting), returning defaults");
             StorageRewardStats::default()
         }
     }
@@ -2918,10 +2924,7 @@ impl Component for ProtocolsComponent {
         
         // Start background task to listen for peer discovery notifications
         info!(" Starting peer discovery listener for blockchain sync...");
-        let blockchain_clone = blockchain.clone();
-        let storage_clone = storage.clone();
         let unified_server_clone = unified_server.clone();
-        let api_port = self.api_port;
         tokio::spawn(async move {
             let mut rx = peer_discovery_rx;
             info!(" Peer discovery listener active - will trigger blockchain sync on peer discovery");

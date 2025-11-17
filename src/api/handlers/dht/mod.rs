@@ -185,10 +185,6 @@ pub struct DhtHandler {
     dht_client: Arc<RwLock<Option<Arc<RwLock<ZkDHTIntegration>>>>>,
     /// Handler statistics
     stats: Arc<RwLock<DhtHandlerStats>>,
-    /// Mesh connections for querying peers
-    mesh_connections: Arc<RwLock<HashMap<PublicKey, MeshConnection>>>,
-    /// ZHTP relay protocol for encrypted queries
-    relay_protocol: Arc<RwLock<Option<ZhtpRelayProtocol>>>,
     /// Storage system (where Web4 content is actually stored)
     storage_system: Arc<RwLock<Option<Arc<RwLock<lib_storage::UnifiedStorageSystem>>>>>,
 }
@@ -215,23 +211,19 @@ impl std::fmt::Debug for DhtHandler {
 
 impl DhtHandler {
     /// Create a new DHT handler with mesh router access and optional storage system
-    pub fn new(mesh_router: Arc<MeshRouter>) -> Self {
+    pub fn new(_mesh_router: Arc<MeshRouter>) -> Self {
         Self {
             dht_client: Arc::new(RwLock::new(None)),
             stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
-            mesh_connections: mesh_router.get_connections(),
-            relay_protocol: mesh_router.get_relay_protocol(),
             storage_system: Arc::new(RwLock::new(None)),
         }
     }
     
     /// Create a new DHT handler with storage system access (for fetching Web4 content)
-    pub fn new_with_storage(mesh_router: Arc<MeshRouter>, storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>) -> Self {
+    pub fn new_with_storage(_mesh_router: Arc<MeshRouter>, storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>) -> Self {
         Self {
             dht_client: Arc::new(RwLock::new(None)),
             stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
-            mesh_connections: mesh_router.get_connections(),
-            relay_protocol: mesh_router.get_relay_protocol(),
             storage_system: Arc::new(RwLock::new(Some(storage))),
         }
     }
@@ -588,242 +580,6 @@ impl DhtHandler {
             ZhtpStatus::ServiceUnavailable,
             "Storage system not initialized".to_string(),
         ))
-    }
-
-    /// OLD implementation - keeping the mesh fallback logic
-    async fn fetch_content_old(&self, content_hash: &str) -> ZhtpResult<ZhtpResponse> {
-        info!(" Fetching content (old method): {}...", &content_hash[..16]);
-
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
-            None => {
-                return Ok(ZhtpResponse::error(
-                    ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
-                ));
-            }
-        };
-
-        // Try local DHT first
-        let mut dht = client.write().await;
-        match dht.fetch_content(content_hash).await {
-            Ok(Some(content)) => {
-                let mut metadata = HashMap::new();
-                metadata.insert("content_hash".to_string(), content_hash.to_string());
-                metadata.insert("size".to_string(), content.len().to_string());
-                metadata.insert("source".to_string(), "local-dht".to_string());
-                metadata.insert("timestamp".to_string(), 
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                        .to_string()
-                );
-
-                let response = DhtContentResponse {
-                    content_hash: content_hash.to_string(),
-                    content,
-                    metadata,
-                };
-
-                info!(" Content fetched from local DHT: {} bytes", response.content.len());
-                Ok(ZhtpResponse::success_with_content_type(
-                    serde_json::to_vec(&response).unwrap(),
-                    "application/json".to_string(),
-                    None,
-                ))
-            }
-            Ok(None) => {
-                info!(" Content not in local DHT, querying mesh peers...");
-                
-                //  Query mesh peers (TCP and Bluetooth)
-                match self.query_mesh_peers_for_content(content_hash).await {
-                    Ok(content) => {
-                        let mut metadata = HashMap::new();
-                        metadata.insert("content_hash".to_string(), content_hash.to_string());
-                        metadata.insert("size".to_string(), content.len().to_string());
-                        metadata.insert("source".to_string(), "mesh-peer".to_string());
-                        metadata.insert("timestamp".to_string(), 
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs()
-                                .to_string()
-                        );
-
-                        let response = DhtContentResponse {
-                            content_hash: content_hash.to_string(),
-                            content,
-                            metadata,
-                        };
-
-                        info!(" Content fetched from mesh peer: {} bytes", response.content.len());
-                        Ok(ZhtpResponse::success_with_content_type(
-                            serde_json::to_vec(&response).unwrap(),
-                            "application/json".to_string(),
-                            None,
-                        ))
-                    }
-                    Err(mesh_err) => {
-                        error!("Failed to fetch content from mesh: {}", mesh_err);
-                        Ok(ZhtpResponse::error(
-                            ZhtpStatus::NotFound,
-                            format!("Content not found in DHT or mesh network: {}", content_hash),
-                        ))
-                    }
-                }
-            }
-            Err(local_err) => {
-                error!("Failed to fetch content from DHT: {}", local_err);
-                Ok(ZhtpResponse::error(
-                    ZhtpStatus::NotFound,
-                    format!("Content not found: {}", content_hash),
-                ))
-            }
-        }
-    }
-    
-    /// Query mesh peers for content (including Bluetooth peers)
-    async fn query_mesh_peers_for_content(&self, content_hash: &str) -> Result<Vec<u8>, anyhow::Error> {
-        info!(" Querying mesh peers for content: {}", &content_hash[..16.min(content_hash.len())]);
-        
-        // Get mesh connections from handler's reference
-        let connections = self.mesh_connections.read().await;
-        
-        if connections.is_empty() {
-            return Err(anyhow::anyhow!("No mesh peers available"));
-        }
-        
-        info!(" Querying {} mesh peers (TCP + Bluetooth)", connections.len());
-        
-        // Try each peer until we find the content
-        for (peer_id, connection) in connections.iter() {
-            let peer_id_hex = hex::encode(&peer_id.as_bytes()[..8.min(peer_id.as_bytes().len())]);
-            info!("  Querying peer {} via {:?}...", peer_id_hex, connection.protocol);
-            
-            // Send relay query to peer
-            match self.send_relay_query_to_peer(peer_id, connection, content_hash).await {
-                Ok(content) => {
-                    info!(" Found content on peer {}", peer_id_hex);
-                    return Ok(content);
-                }
-                Err(e) => {
-                    debug!("  Peer {} doesn't have content: {}", peer_id_hex, e);
-                    continue;
-                }
-            }
-        }
-        
-        Err(anyhow::anyhow!("Content not found on any mesh peer"))
-    }
-    
-    /// Send ZHTP relay query to a specific peer
-    async fn send_relay_query_to_peer(
-        &self,
-        _peer_id: &lib_crypto::PublicKey,
-        connection: &lib_network::MeshConnection,
-        content_hash: &str,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        use lib_network::protocols::NetworkProtocol;
-        
-        // Get the peer's address from connection
-        let peer_addr = connection.peer_address.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Peer has no known address"))?;
-        
-        match connection.protocol {
-            NetworkProtocol::TCP => {
-                // Send UDP relay query (existing ZHTP relay protocol)
-                self.send_udp_relay_query(peer_addr, content_hash).await
-            }
-            NetworkProtocol::BluetoothLE => {
-                // Send via TCP to Bluetooth peer (they're connected via TCP too)
-                self.send_tcp_relay_query(peer_addr, content_hash).await
-            }
-            NetworkProtocol::WiFiDirect => {
-                // Send via TCP for WiFi Direct peers
-                self.send_tcp_relay_query(peer_addr, content_hash).await
-            }
-            _ => {
-                Err(anyhow::anyhow!("Unsupported protocol: {:?}", connection.protocol))
-            }
-        }
-    }
-    
-    /// Send UDP relay query (standard ZHTP relay protocol)
-    async fn send_udp_relay_query(&self, peer_addr: &str, content_hash: &str) -> Result<Vec<u8>, anyhow::Error> {
-        use tokio::net::UdpSocket;
-        use lib_network::dht::protocol::ZhtpQueryOptions;
-        
-        info!(" Sending UDP relay query to {}", peer_addr);
-        
-        // Parse content_hash as domain/path
-        let (domain, path) = if content_hash.contains('/') {
-            let parts: Vec<&str> = content_hash.splitn(2, '/').collect();
-            (parts[0], parts.get(1).copied().unwrap_or(""))
-        } else {
-            (content_hash, "")
-        };
-        
-        // Get relay protocol from handler's reference
-        let relay_protocol = self.relay_protocol.read().await;
-        if let Some(protocol) = relay_protocol.as_ref() {
-            // Create relay query options
-            let options = ZhtpQueryOptions {
-                max_size: Some(1024 * 1024), // 1MB max
-                accept_compression: true,
-                cache_preference: CachePreference::PreferFresh,
-            };
-            
-            let query = protocol.create_relay_query(peer_addr, domain, path, options).await?;
-            let query_bytes = bincode::serialize(&query)?;
-            
-            // Send via UDP (localhost only for pure mesh)
-            let socket = UdpSocket::bind("127.0.0.1:0").await?;
-            socket.send_to(&query_bytes, peer_addr).await?;
-            
-            // Wait for response (with timeout)
-            let mut response_buf = vec![0u8; 65536];
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                socket.recv_from(&mut response_buf)
-            ).await {
-                Ok(Ok((len, _))) => {
-                    // Parse response
-                    if let Ok(response) = bincode::deserialize::<lib_network::dht::protocol::ZhtpRelayResponse>(&response_buf[..len]) {
-                        let payload = protocol.process_relay_response(peer_addr, &response).await?;
-                        if let Some(content) = payload.content {
-                            return Ok(content);
-                        }
-                    }
-                    Err(anyhow::anyhow!("Invalid relay response"))
-                }
-                Ok(Err(e)) => Err(anyhow::anyhow!("UDP receive error: {}", e)),
-                Err(_) => Err(anyhow::anyhow!("Relay query timeout"))
-            }
-        } else {
-            Err(anyhow::anyhow!("Relay protocol not initialized"))
-        }
-    }
-    
-    /// Send TCP relay query (for Bluetooth and WiFi Direct peers)
-    /// Uses DHTClient's built-in send_dht_query which has proper blockchain identity and Dilithium2 signing
-    async fn send_tcp_relay_query(&self, peer_addr: &str, content_hash: &str) -> Result<Vec<u8>, anyhow::Error> {
-        info!(" Sending TCP DHT query to {} for hash {}", peer_addr, &content_hash[..8.min(content_hash.len())]);
-        
-        // Parse content hash into domain/path format
-        let (domain, path) = if content_hash.contains('/') {
-            let parts: Vec<&str> = content_hash.splitn(2, '/').collect();
-            (parts[0].to_string(), format!("/{}", parts.get(1).unwrap_or(&"")))
-        } else {
-            (content_hash.to_string(), "/".to_string())
-        };
-        
-        // Old DHTClient code commented out - DHTQuery type no longer exists
-        // This was blockchain-verified identity + Dilithium2 signing approach
-        // Now we use the simpler ZkDHTIntegration from shared_dht
-        
-        Err(anyhow::anyhow!("DHT peer query not yet implemented with new API"))
     }
 
     /// Store content in DHT

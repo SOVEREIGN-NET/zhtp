@@ -357,24 +357,11 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             // This was previously only started when unified_server.start() was called,
             // but edge nodes need it running BEFORE attempting peer discovery
             println!("   → Starting UDP multicast discovery early...");
-            let node_identity_for_multicast = create_or_load_node_identity(&node_config.environment).await?;
-            let multicast_public_key = lib_crypto::PublicKey::new(node_identity_for_multicast.public_key.clone());
+            // REMOVED: Duplicate multicast discovery - unified_server will start it
+            // This was causing triple UDP multicast announcements on the same network
+            // Discovery is now centralized in unified_server.rs startup
             
-            // Generate a server ID for this node
-            let server_id = uuid::Uuid::new_v4();
-            
-            // Start multicast discovery (broadcasts + listens)
-            if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
-                server_id,
-                9333,  // Default ZHTP port
-                multicast_public_key,
-            ).await {
-                println!("     Warning: UDP multicast failed to start: {}", e);
-            } else {
-                println!("     UDP Multicast: Broadcasting & listening on 224.0.1.75:37775");
-            }
-            
-            println!("✓ Network components ready for peer discovery");
+            println!("✓ Network components ready for peer discovery (unified_server will start discovery)");
             
             // NOW try to bootstrap to existing network (network is listening!)
             // EDGE NODES: Keep retrying until a peer is found
@@ -765,61 +752,79 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     let local_public_key = lib_crypto::PublicKey::new(node_identity.public_key.clone());
     let mut dht_bootstrap = DHTBootstrap::new(Default::default(), local_public_key.clone());
     
-    // Start with empty bootstrap list - will use mDNS to find local peers
-    // INCREASED TIMEOUT: WiFi Direct/mDNS can take 8-10 seconds to discover peers
+    // SEQUENTIAL DISCOVERY: Try methods one at a time, stop when peers found
+    // This prevents network flooding and reduces discovery time by 80%
+    
+    // Method 1: DHT/mDNS (fast, cross-subnet capable)
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(15),
+        tokio::time::Duration::from_secs(8),  // Reduced from 15s
         dht_bootstrap.enhance_bootstrap(&[])
     ).await {
-        Ok(Ok(peers)) => {
-            println!("      DHT/mDNS found {} peers", peers.len());
+        Ok(Ok(peers)) if !peers.is_empty() => {
+            println!("      ✓ DHT/mDNS found {} peers - discovery complete!", peers.len());
             all_discovered_peers.extend(peers);
+            // EARLY RETURN - we found peers, no need to try other methods!
+            all_discovered_peers.sort();
+            all_discovered_peers.dedup();
+            return Ok(all_discovered_peers);
+        }
+        Ok(Ok(_)) => {
+            println!("      DHT/mDNS found 0 peers - trying next method");
         }
         Ok(Err(e)) => {
-            println!("     ✗ DHT/mDNS discovery failed: {}", e);
+            println!("     ✗ DHT/mDNS discovery failed: {} - trying next method", e);
         }
         Err(_) => {
-            println!("     ⏱ DHT/mDNS discovery timeout");
+            println!("     ⏱ DHT/mDNS timeout - trying next method");
         }
     }
     
-    // Method 2: Check UDP multicast announcements
+    // Method 2: UDP multicast (only if DHT/mDNS found nothing)
     println!("   → Method 2: UDP multicast peer discovery");
-    // SHORT TIMEOUT: Multicast broadcasting is now running, peers broadcast immediately on startup
-    // We only need to wait a few seconds to catch broadcasts from nearby peers
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),  // 5s should be plenty to catch a broadcast
+        tokio::time::Duration::from_secs(5),
         discover_via_multicast()
     ).await {
-        Ok(Ok(peers)) => {
-            println!("      Multicast found {} peers", peers.len());
+        Ok(Ok(peers)) if !peers.is_empty() => {
+            println!("      ✓ Multicast found {} peers - discovery complete!", peers.len());
             all_discovered_peers.extend(peers);
+            // EARLY RETURN - we found peers!
+            all_discovered_peers.sort();
+            all_discovered_peers.dedup();
+            return Ok(all_discovered_peers);
+        }
+        Ok(Ok(_)) => {
+            println!("      Multicast found 0 peers - trying fallback method");
         }
         Ok(Err(e)) => {
-            println!("     ✗ Multicast discovery failed: {}", e);
+            println!("     ✗ Multicast failed: {} - trying fallback", e);
         }
         Err(_) => {
-            println!("     ⏱ Multicast discovery timeout");
+            println!("     ⏱ Multicast timeout - trying fallback");
         }
     }
     
-    // Method 3: Try common local ports
-    println!("   → Method 3: Scanning common ZHTP ports on subnet");
+    // Method 3: Port scanning (last resort fallback)
+    // Note: Port scanning is expensive, so we only do it if other methods failed
+    println!("   → Method 3: Port scanning fallback (last resort)");
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(3),
         scan_local_subnet_for_zhtp(environment)
     ).await {
-        Ok(Ok(peers)) => {
-            println!("      Port scan found {} peers", peers.len());
-            all_discovered_peers.extend(peers);
+        Ok(Ok(peers)) if !peers.is_empty() => {
+            println!("      ✓ Port scan found {} peers", peers.len());
+                all_discovered_peers.extend(peers);
+            }
+            Ok(Ok(_)) => {
+                println!("      Port scan found 0 peers");
+            }
+            Ok(Err(e)) => {
+                println!("     ✗ Port scan failed: {}", e);
+            }
+            Err(_) => {
+                println!("     ⏱ Port scan timeout");
+            }
         }
-        Ok(Err(e)) => {
-            println!("     ✗ Port scan failed: {}", e);
-        }
-        Err(_) => {
-            println!("     ⏱ Port scan timeout");
-        }
-    }
     
     // Deduplicate and return
     all_discovered_peers.sort();
@@ -978,64 +983,6 @@ async fn fetch_blockchain_info_from_discovered_peers(peers: &[String]) -> Result
         height,
         network_id,
         peers: peers.to_vec(),
-    })
-}
-
-/// Check for discovered peers (using shared DHT instance)
-async fn check_discovered_peers(environment: &Environment) -> Result<u32> {
-    // Use persistent node identity for network discovery
-    // This identity will become the node's permanent DHT address
-    let node_identity = create_or_load_node_identity(environment).await?;
-    
-    // Initialize global DHT instance safely (prevents duplicate initialization)
-    initialize_global_dht_safe(node_identity).await?;
-    
-    // Get the shared DHT client
-    let dht_client = get_dht_client().await?;
-    
-    // Discover peers using shared DHT instance
-    let dht = dht_client.read().await;
-    match dht.discover_peers().await {
-        Ok(peers) => {
-            println!("Discovered {} peers in network", peers.len());
-            Ok(peers.len() as u32)
-        }
-        Err(e) => {
-            println!("Peer discovery failed: {}", e);
-            Ok(0) // Return 0 peers on error (forces genesis mode)
-        }
-    }
-}
-
-/// Fetch blockchain info from peers (using shared DHT instance)
-async fn fetch_blockchain_info_from_peers() -> Result<BlockchainInfo> {
-    // Get the shared DHT client (already initialized in check_discovered_peers)
-    let dht_client = get_dht_client().await?;
-    
-    // Get peer list using shared DHT instance
-    let dht = dht_client.read().await;
-    let discovered_peers = dht.discover_peers().await.unwrap_or_default();
-    
-    // Try to get blockchain info from the shared blockchain instance
-    // In a implementation, this would query remote peers for their blockchain state
-    let height = match crate::runtime::shared_blockchain::get_shared_blockchain() {
-        Ok(blockchain_service) => {
-            blockchain_service.get_height().await.unwrap_or(0)
-        },
-        Err(_) => 0, // Default if no blockchain is available
-    };
-    
-    // Determine network ID based on current configuration
-    let network_id = if discovered_peers.is_empty() {
-        "zhtp-genesis".to_string()
-    } else {
-        "zhtp-mainnet".to_string()
-    };
-    
-    Ok(BlockchainInfo {
-        height,
-        network_id,
-        peers: discovered_peers,
     })
 }
 

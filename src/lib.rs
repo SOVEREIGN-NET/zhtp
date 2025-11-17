@@ -11,6 +11,7 @@ pub mod api;
 pub mod unified_server;
 pub mod session_manager;
 pub mod security;
+pub mod discovery_coordinator;
 
 // Mobile FFI bindings (re-exported from lib-network for mobile builds)
 #[cfg(any(feature = "mobile", feature = "android", feature = "ios"))]
@@ -26,6 +27,7 @@ pub use api::{ZhtpServer, IdentityHandler, BlockchainHandler, StorageHandler, Pr
 pub use unified_server::{ZhtpUnifiedServer, IncomingProtocol};
 pub use session_manager::SessionManager;
 pub use security::{Protocol, ProtocolFilter};
+pub use discovery_coordinator::{DiscoveryCoordinator, DiscoveryProtocol, DiscoveryStrategy, DiscoveredPeer};
 
 /// ZHTP node version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1195,38 +1195,6 @@ fn calculate_pending_balance_for_address(
     pending_balance
 }
 
-/// Create a cryptographic signature for blockchain transactions
-async fn create_real_transaction_signature(
-    req_data: &SubmitTransactionRequest,
-) -> anyhow::Result<lib_blockchain::integration::crypto_integration::Signature> {
-    use lib_blockchain::integration::crypto_integration::{
-        PublicKey, Signature, SignatureAlgorithm,
-    };
-
-    // Generate a keypair for this transaction (in production, use existing identity keypair)
-    let keypair = generate_keypair()?;
-
-    // Create message to sign from transaction data
-    let message = format!(
-        "{}{}{}{}",
-        req_data.from, req_data.to, req_data.amount, req_data.fee
-    );
-
-    // Sign the message with post-quantum cryptography
-    let crypto_signature = sign_message(&keypair, message.as_bytes())?;
-
-    // Create blockchain signature structure
-    Ok(Signature {
-        signature: crypto_signature.signature,
-        public_key: PublicKey::new(keypair.public_key.dilithium_pk.to_vec()),
-        algorithm: SignatureAlgorithm::Dilithium2,
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    })
-}
-
 // ============================================================================
 // SMART CONTRACT HANDLERS
 // ============================================================================
