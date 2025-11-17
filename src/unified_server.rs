@@ -7074,6 +7074,42 @@ impl ZhtpUnifiedServer {
         }
     }
     
+    /// FIX: Connect to bootstrap peers and initiate blockchain sync
+    /// This method should be called after the server starts to establish outgoing connections
+    pub async fn connect_to_bootstrap_peers(&self, bootstrap_peers: Vec<String>) -> Result<()> {
+        if bootstrap_peers.is_empty() {
+            info!(" No bootstrap peers to connect to");
+            return Ok(());
+        }
+        
+        info!(" Connecting to {} bootstrap peer(s) for blockchain sync...", bootstrap_peers.len());
+        
+        for peer_str in &bootstrap_peers {
+            // Parse the peer address - it might be "192.168.1.245:9333" or "zhtp://192.168.1.245:9333"
+            let addr_str = peer_str.trim_start_matches("zhtp://").trim_start_matches("http://");
+            
+            match addr_str.parse::<SocketAddr>() {
+                Ok(peer_addr) => {
+                    info!("   Connecting to bootstrap peer: {}", peer_addr);
+                    
+                    // Establish UDP mesh connection - this will send PeerAnnouncement
+                    // and trigger blockchain sync when the peer responds
+                    if let Err(e) = self.establish_udp_connection(peer_addr).await {
+                        warn!("   Failed to connect to {}: {}", peer_addr, e);
+                    } else {
+                        info!("   ✓ Connected to bootstrap peer {}", peer_addr);
+                    }
+                }
+                Err(e) => {
+                    warn!("   Failed to parse bootstrap peer address '{}': {}", peer_str, e);
+                }
+            }
+        }
+        
+        info!(" Bootstrap peer connections initiated");
+        Ok(())
+    }
+    
     /// Stop the unified server
     pub async fn stop(&mut self) -> Result<()> {
         info!("Stopping ZHTP Unified Server...");

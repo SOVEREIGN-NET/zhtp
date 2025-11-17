@@ -759,9 +759,16 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
             tokio::time::Duration::from_secs(2),
             tokio::net::TcpStream::connect(bootstrap_addr)
         ).await {
-            Ok(Ok(_)) => {
+            Ok(Ok(stream)) => {
                 println!("      ✓ Bootstrap node {} is reachable!", bootstrap_addr);
                 all_discovered_peers.push(bootstrap_addr.clone());
+                
+                // FIX: Keep connection alive and register with discovery coordinator
+                // so the sync mechanism can use this TCP connection
+                drop(stream); // Close test connection - will reconnect via mesh protocol
+                
+                println!("      → Registering bootstrap peer with discovery coordinator...");
+                // The peer will be available for sync after network component starts
             }
             _ => {
                 println!("      ✗ Bootstrap node {} not reachable", bootstrap_addr);

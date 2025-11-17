@@ -19,6 +19,7 @@ pub mod blockchain_provider;
 pub mod identity_manager_provider;
 pub mod network_blockchain_provider;
 pub mod mesh_router_provider;
+pub mod bootstrap_peers_provider;  // FIX: Global access to bootstrap peers for UnifiedServer
 pub mod did_startup;
 pub mod routing_rewards;
 pub mod storage_rewards;
@@ -572,8 +573,12 @@ impl RuntimeOrchestrator {
         crate::runtime::blockchain_provider::set_global_blockchain(blockchain_arc.clone()).await?;
         info!("✓ Temporary blockchain initialized for sync reception");
         
-        // Note: The actual sync will be triggered by the UnifiedServer when it processes
-        // peer connections. The blockchain is now ready to receive synced blocks.
+        // FIX: Store bootstrap peers in global provider so UnifiedServer can access them
+        let peers = network_info.bootstrap_peers.clone();
+        if !peers.is_empty() {
+            info!(" Bootstrap peers available for sync: {:?}", peers);
+            crate::runtime::bootstrap_peers_provider::set_bootstrap_peers(peers).await?;
+        }
         
         info!("✓ Blockchain ready to receive sync from network peers");
         Ok(())

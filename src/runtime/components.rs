@@ -2922,6 +2922,22 @@ impl Component for ProtocolsComponent {
         // Start the unified server (replaces all separate servers!)
         unified_server.start().await?;
         
+        // FIX: Connect to bootstrap peers if available (for initial blockchain sync)
+        if let Some(bootstrap_peers) = crate::runtime::bootstrap_peers_provider::get_bootstrap_peers().await {
+            info!(" Bootstrap peers discovered during network join - connecting now...");
+            tokio::spawn({
+                let server = unified_server.clone();
+                async move {
+                    // Wait a moment for the server to fully start
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    
+                    if let Err(e) = server.connect_to_bootstrap_peers(bootstrap_peers).await {
+                        warn!("Failed to connect to bootstrap peers: {}", e);
+                    }
+                }
+            });
+        }
+        
         // Start background task to listen for peer discovery notifications
         info!(" Starting peer discovery listener for blockchain sync...");
         let unified_server_clone = unified_server.clone();
