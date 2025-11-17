@@ -353,36 +353,10 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("   → Waiting for network stack to initialize...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             
-            // CRITICAL FIX: Start UDP multicast broadcasting IMMEDIATELY for BOTH nodes
-            // This allows edge nodes to discover full nodes during their retry loop
-            // The unified_server will take over broadcasting later, but we need immediate presence
-            println!("   → Starting UDP multicast broadcasting immediately...");
-            use lib_network::discovery::local_network;
-            use uuid::Uuid;
-            
-            let temp_server_id = Uuid::new_v4();
-            let temp_port = 9333u16;
-            
-            // Use a placeholder public key for early broadcasting
-            // The real key exchange happens during TCP handshake
-            let temp_pubkey = lib_crypto::PublicKey {
-                dilithium_pk: vec![0u8; 32], // Placeholder - real key from unified_server
-                kyber_pk: vec![],
-                key_id: [0u8; 32],
-            };
-            
-            // Start broadcasting (no callback needed for initial discovery)
-            if let Err(e) = local_network::start_local_discovery(
-                temp_server_id,
-                temp_port,
-                temp_pubkey,
-                None, // No callback yet
-            ).await {
-                println!("   ⚠ Early multicast broadcast failed: {} - unified_server will start it later", e);
-            } else {
-                println!("   ✓ UDP multicast broadcasting active on 224.0.1.75:37775");
-                println!("   ✓ This node is now discoverable by other ZHTP nodes");
-            }
+            // NOTE: We used to do "early broadcasting" here, but it caused duplicate node_ids
+            // because the unified_server generates its own node_id later.
+            // The unified_server will start broadcasting within ~5 seconds, which is fast enough
+            // for the edge node's 35-second multicast listen window to catch.
             
             println!("✓ Network components ready for peer discovery");
             
