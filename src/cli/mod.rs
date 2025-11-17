@@ -111,6 +111,10 @@ pub enum NodeAction {
         /// Maximum headers to store in edge mode (default: 500 = ~100KB)
         #[arg(long, default_value = "500")]
         edge_max_headers: usize,
+        /// Manually specify a bootstrap peer address (e.g., "192.168.1.245:9333")
+        /// Useful when automatic discovery fails due to network configuration
+        #[arg(long)]
+        bootstrap_peer: Option<String>,
     },
     /// Stop the orchestrator node
     Stop,

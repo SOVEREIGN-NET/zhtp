@@ -171,7 +171,7 @@ pub struct ExistingNetworkInfo {
 
 pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
     match args.action {
-        NodeAction::Start { config, port, dev, pure_mesh, network, edge_mode, edge_max_headers } => {
+        NodeAction::Start { config, port, dev, pure_mesh, network, edge_mode, edge_max_headers, bootstrap_peer } => {
             println!(" Starting ZHTP orchestrator node...");
             if let Some(p) = port {
                 println!("Port override: {}", p);
