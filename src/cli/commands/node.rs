@@ -779,7 +779,7 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     // Method 2: UDP multicast (only if DHT/mDNS found nothing)
     println!("   → Method 2: UDP multicast peer discovery");
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
+        tokio::time::Duration::from_secs(40),  // Allow 35s listen window + 5s buffer
         discover_via_multicast()
     ).await {
         Ok(Ok(peers)) if !peers.is_empty() => {
