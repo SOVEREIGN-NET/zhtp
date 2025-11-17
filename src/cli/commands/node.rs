@@ -353,15 +353,38 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("   → Waiting for network stack to initialize...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             
-            // EDGE NODE FIX: Start UDP multicast discovery IMMEDIATELY
-            // This was previously only started when unified_server.start() was called,
-            // but edge nodes need it running BEFORE attempting peer discovery
-            println!("   → Starting UDP multicast discovery early...");
-            // REMOVED: Duplicate multicast discovery - unified_server will start it
-            // This was causing triple UDP multicast announcements on the same network
-            // Discovery is now centralized in unified_server.rs startup
+            // CRITICAL FIX: Start UDP multicast broadcasting IMMEDIATELY for BOTH nodes
+            // This allows edge nodes to discover full nodes during their retry loop
+            // The unified_server will take over broadcasting later, but we need immediate presence
+            println!("   → Starting UDP multicast broadcasting immediately...");
+            use lib_network::discovery::local_network;
+            use uuid::Uuid;
             
-            println!("✓ Network components ready for peer discovery (unified_server will start discovery)");
+            let temp_server_id = Uuid::new_v4();
+            let temp_port = 9333u16;
+            
+            // Use a placeholder public key for early broadcasting
+            // The real key exchange happens during TCP handshake
+            let temp_pubkey = lib_crypto::PublicKey {
+                dilithium_pk: vec![0u8; 32], // Placeholder - real key from unified_server
+                kyber_pk: vec![],
+                key_id: [0u8; 32],
+            };
+            
+            // Start broadcasting (no callback needed for initial discovery)
+            if let Err(e) = local_network::start_local_discovery(
+                temp_server_id,
+                temp_port,
+                temp_pubkey,
+                None, // No callback yet
+            ).await {
+                println!("   ⚠ Early multicast broadcast failed: {} - unified_server will start it later", e);
+            } else {
+                println!("   ✓ UDP multicast broadcasting active on 224.0.1.75:37775");
+                println!("   ✓ This node is now discoverable by other ZHTP nodes");
+            }
+            
+            println!("✓ Network components ready for peer discovery");
             
             // NOW try to bootstrap to existing network (network is listening!)
             // EDGE NODES: Keep retrying until a peer is found
@@ -847,8 +870,9 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     
     let mut discovered = Vec::new();
     let mut buf = [0u8; 1024];
-    // Wait up to 3 seconds to catch broadcasts (nodes broadcast immediately on startup)
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+    // Wait up to 35 seconds to catch broadcasts (nodes broadcast every 30 seconds)
+    // This ensures we catch at least one broadcast cycle
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(35);
     
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
@@ -883,7 +907,7 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
 }
 
 /// Scan local subnet for ZHTP nodes on common ports
-async fn scan_local_subnet_for_zhtp(environment: &Environment) -> Result<Vec<String>> {
+async fn scan_local_subnet_for_zhtp(_environment: &Environment) -> Result<Vec<String>> {
     use tokio::net::TcpStream;
     use std::net::{IpAddr, Ipv4Addr};
     
@@ -900,12 +924,39 @@ async fn scan_local_subnet_for_zhtp(environment: &Environment) -> Result<Vec<Str
         // Common ZHTP ports to check
         let ports = vec![9333, 33446];
         
-        // Scan a small range around our IP
+        // Scan intelligently: check IPs near us first, then expand outward
         let our_last_octet = octets[3];
-        let scan_range: Vec<u8> = (1..=254)
-            .filter(|&i| i != our_last_octet) // Skip ourselves
-            .take(20) // Limit scan to avoid slowdown
-            .collect();
+        let mut scan_range: Vec<u8> = Vec::new();
+        
+        // Check neighbors first (within ±10 of our IP)
+        for offset in 1..=10 {
+            if our_last_octet >= offset {
+                let ip = our_last_octet - offset;
+                if ip > 0 {
+                    scan_range.push(ip);
+                }
+            }
+            if our_last_octet + offset <= 254 {
+                scan_range.push(our_last_octet + offset);
+            }
+        }
+        
+        // Then check common router/gateway IPs
+        for common_ip in [1, 254, 100, 101, 200, 201] {
+            if common_ip != our_last_octet && !scan_range.contains(&common_ip) {
+                scan_range.push(common_ip);
+            }
+        }
+        
+        // Finally, scan some random IPs across the range for broader coverage
+        for ip in (1..=254).step_by(25) {
+            if ip != our_last_octet && !scan_range.contains(&ip) {
+                scan_range.push(ip);
+            }
+        }
+        
+        // Limit total scan to 50 IPs to keep it fast
+        scan_range.truncate(50);
         
         for last_octet in scan_range {
             for &port in &ports {
