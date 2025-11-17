@@ -75,6 +75,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 parking_lot = "0.12"
 urlencoding = "2.1"
 local-ip-address = "0.6"
+socket2 = "0.5"  # Socket options for multicast discovery
 
 # Windows-specific dependencies (for Bluetooth and WiFi Direct protocols)
 [target.'cfg(target_os = "windows")'.dependencies.windows]

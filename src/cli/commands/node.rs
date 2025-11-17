@@ -864,7 +864,18 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     const ZHTP_MULTICAST_ADDR: &str = "224.0.1.75";
     const ZHTP_MULTICAST_PORT: u16 = 37775;
     
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", ZHTP_MULTICAST_PORT)).await?;
+    // Use SO_REUSEADDR to allow multiple listeners on the same port
+    // This lets us coexist with the persistent multicast broadcaster
+    use socket2::{Socket, Domain, Type, Protocol};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.bind(&format!("0.0.0.0:{}", ZHTP_MULTICAST_PORT).parse::<std::net::SocketAddr>()?.into())?;
+    socket.set_nonblocking(true)?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    let socket = UdpSocket::from_std(std_socket)?;
+    
     let multicast_addr: Ipv4Addr = ZHTP_MULTICAST_ADDR.parse()?;
     socket.join_multicast_v4(multicast_addr, Ipv4Addr::UNSPECIFIED)?;
     
@@ -874,6 +885,12 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     // This ensures we catch at least one broadcast cycle
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(35);
     
+    // Get our local IP to filter out our own broadcasts
+    let our_local_ip = match get_local_ip_address().await {
+        Ok(ip) => Some(ip),
+        Err(_) => None,
+    };
+    
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
             tokio::time::Duration::from_millis(500),
@@ -882,6 +899,17 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
             Ok(Ok((len, addr))) => {
                 if let Ok(announcement) = String::from_utf8(buf[..len].to_vec()) {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&announcement) {
+                        // Extract node_id and local_ip from announcement
+                        let node_id = parsed.get("node_id").and_then(|n| n.as_str());
+                        let local_ip = parsed.get("local_ip").and_then(|ip| ip.as_str());
+                        
+                        // Skip our own announcements (check local_ip)
+                        if let (Some(our_ip), Some(peer_ip)) = (our_local_ip.as_ref(), local_ip) {
+                            if our_ip.to_string() == peer_ip {
+                                continue; // Ignore our own broadcast
+                            }
+                        }
+                        
                         if let Some(mesh_port) = parsed.get("mesh_port").and_then(|p| p.as_u64()) {
                             let peer_addr = format!("zhtp://{}:{}", addr.ip(), mesh_port);
                             if !discovered.contains(&peer_addr) {
