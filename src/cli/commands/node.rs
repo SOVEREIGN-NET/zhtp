@@ -171,7 +171,7 @@ pub struct ExistingNetworkInfo {
 
 pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
     match args.action {
-        NodeAction::Start { config, port, dev, pure_mesh, network, edge_mode, edge_max_headers, bootstrap_peer } => {
+        NodeAction::Start { config, port, dev, pure_mesh, network, edge_mode, edge_max_headers, .. } => {
             println!(" Starting ZHTP orchestrator node...");
             if let Some(p) = port {
                 println!("Port override: {}", p);
@@ -356,9 +356,30 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("✓ Network components ready for peer discovery");
             
             // NOW try to bootstrap to existing network (network is listening!)
-            println!("\n🔍 Attempting to discover existing ZHTP network...");
-            println!("   Discovery timeout: 30 seconds (allows BLE/WiFi Direct time)");
-            let mesh_connection_result = attempt_mesh_bootstrap(&mut orchestrator, &node_config.environment).await;
+            // EDGE NODES: Keep retrying until a peer is found
+            let mesh_connection_result = if is_edge_node {
+                println!("\n🔍 Edge node: Continuously searching for ZHTP network...");
+                println!("   Will retry every 35 seconds until a full node is found");
+                println!("   Press Ctrl+C to stop\n");
+                
+                let mut attempt = 1;
+                loop {
+                    println!("📡 Discovery attempt #{}", attempt);
+                    match attempt_mesh_bootstrap(&mut orchestrator, &node_config.environment).await {
+                        Ok(network_info) => break Ok(network_info),
+                        Err(e) => {
+                            println!("   ✗ Attempt #{} failed: {}", attempt, e);
+                            println!("   ⏳ Waiting 5 seconds before retry #{}", attempt + 1);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            attempt += 1;
+                        }
+                    }
+                }
+            } else {
+                println!("\n🔍 Attempting to discover existing ZHTP network...");
+                println!("   Discovery timeout: 30 seconds (allows BLE/WiFi Direct time)");
+                attempt_mesh_bootstrap(&mut orchestrator, &node_config.environment).await
+            };
             
             let startup_result = match mesh_connection_result {
                 Ok(existing_network_info) => {
@@ -395,24 +416,13 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                     println!("\nℹ No existing ZHTP network found: {}", e);
                     
                     // EDGE NODES CANNOT CREATE GENESIS BLOCKS!
+                    // (This should never be reached for edge nodes due to retry loop above)
                     if is_edge_node {
                         return Err(anyhow::anyhow!(
                             "\n❌ Edge Node Cannot Start Without Network\n\
                              \n\
-                             Edge nodes must connect to an existing ZHTP network.\n\
-                             No peers were discovered on the local network.\n\
-                             \n\
-                             To fix this:\n\
-                             1. Start a full ZHTP node on your network first:\n\
-                                   zhtp node start\n\
-                             \n\
-                             2. Wait for the full node to create its genesis block\n\
-                             \n\
-                             3. Then start this edge node:\n\
-                                   zhtp node start --edge-mode\n\
-                             \n\
-                             Edge nodes sync headers from full nodes - they cannot\n\
-                             create their own blockchain.\n"
+                             This should not happen - edge nodes retry indefinitely.\n\
+                             Please report this bug.\n"
                         ));
                     }
                     
@@ -831,7 +841,15 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
                     }
                 }
             }
-            _ => break,
+            Ok(Err(e)) => {
+                // Socket error - break loop
+                eprintln!("UDP socket error: {}", e);
+                break;
+            }
+            Err(_) => {
+                // Timeout on recv - no packet in last 500ms, keep waiting
+                continue;
+            }
         }
     }
     
