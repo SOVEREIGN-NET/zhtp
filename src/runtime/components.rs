@@ -2895,11 +2895,30 @@ impl Component for ProtocolsComponent {
         // Initialize ZHTP authentication manager with blockchain identity
         info!(" Initializing ZHTP authentication and relay protocols...");
         
-        // Note: Node identity for ZHTP authentication should be created separately
-        // For now, authentication is disabled - identities are managed by IdentityComponent
-        warn!("  ZHTP authentication using identity manager (no separate node identity file)");
+        // Initialize ZHTP authentication manager with node's blockchain identity
+        let mgr = identity_manager.read().await;
+        let identities = mgr.list_identities();
+        if !identities.is_empty() {
+            // Use node device identity (should be second identity, first is user)
+            let node_identity = if identities.len() >= 2 {
+                &identities[1] // Node device identity
+            } else {
+                &identities[0] // Fallback to first identity
+            };
+            
+            let blockchain_pubkey = lib_crypto::PublicKey::new(node_identity.public_key.clone());
+            
+            if let Err(e) = unified_server.initialize_auth_manager(blockchain_pubkey).await {
+                warn!("Failed to initialize ZHTP auth manager: {}", e);
+            } else {
+                info!(" ZHTP auth manager initialized with node identity {}", hex::encode(&node_identity.id.0[..8]));
+            }
+        } else {
+            warn!("  No identities available - ZHTP authentication will use empty signatures");
+        }
+        drop(mgr); // Release lock before await
         
-        // Initialize relay protocol without node-specific identity
+        // Initialize relay protocol
         if let Err(e) = unified_server.initialize_relay_protocol().await {
             warn!("Failed to initialize ZHTP relay protocol: {}", e);
         } else {
