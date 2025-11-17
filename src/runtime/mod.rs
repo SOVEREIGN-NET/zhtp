@@ -526,6 +526,59 @@ impl RuntimeOrchestrator {
         Ok(())
     }
     
+    /// Get current blockchain height (returns 0 if blockchain not initialized)
+    pub async fn get_blockchain_height(&self) -> Result<u64> {
+        match crate::runtime::blockchain_provider::get_global_blockchain().await {
+            Ok(blockchain_arc) => {
+                let blockchain = blockchain_arc.read().await;
+                Ok(blockchain.height)
+            }
+            Err(_) => Ok(0)
+        }
+    }
+    
+    /// Wait for initial blockchain sync to reach at least height 1
+    pub async fn wait_for_initial_sync(&self, timeout: std::time::Duration) -> Result<()> {
+        let start = std::time::Instant::now();
+        
+        info!("⏳ Waiting for initial blockchain sync (timeout: {:?})...", timeout);
+        
+        loop {
+            if start.elapsed() > timeout {
+                return Err(anyhow::anyhow!("Initial sync timeout after {:?}", timeout));
+            }
+            
+            let height = self.get_blockchain_height().await?;
+            if height > 0 {
+                info!("✓ Initial sync complete: height = {}", height);
+                return Ok(());
+            }
+            
+            // Check every 500ms
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+    
+    /// Start blockchain sync from existing network (called before identity setup)
+    pub async fn start_blockchain_sync(&mut self, network_info: &crate::cli::commands::node::ExistingNetworkInfo) -> Result<()> {
+        info!("📦 Starting blockchain sync from {} peers...", network_info.peer_count);
+        
+        // Initialize a temporary blockchain to receive sync data
+        // This will be populated by the mesh sync before the full BlockchainComponent starts
+        let blockchain = lib_blockchain::Blockchain::new()?;
+        let blockchain_arc = Arc::new(RwLock::new(blockchain));
+        
+        // Set in global provider so sync handlers can access it
+        crate::runtime::blockchain_provider::set_global_blockchain(blockchain_arc.clone()).await?;
+        info!("✓ Temporary blockchain initialized for sync reception");
+        
+        // Note: The actual sync will be triggered by the UnifiedServer when it processes
+        // peer connections. The blockchain is now ready to receive synced blocks.
+        
+        info!("✓ Blockchain ready to receive sync from network peers");
+        Ok(())
+    }
+    
     /// Check if this node is configured as an edge node
     pub async fn is_edge_node(&self) -> bool {
         *self.is_edge_node.read().await

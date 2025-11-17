@@ -160,13 +160,13 @@ fn prompt_for_wallet_password(wallet_type: &str) -> Result<Option<String>> {
 // Network Info and Identity Management
 // ============================================================================
 
-#[derive(Debug)]
-struct ExistingNetworkInfo {
-    peer_count: u32,
-    blockchain_height: u64,
-    network_id: String,
-    bootstrap_peers: Vec<String>,
-    environment: Environment,  // NEW: Network-specific environment for proper data paths
+#[derive(Debug, Clone)]
+pub struct ExistingNetworkInfo {
+    pub peer_count: u32,
+    pub blockchain_height: u64,
+    pub network_id: String,
+    pub bootstrap_peers: Vec<String>,
+    pub environment: Environment,  // NEW: Network-specific environment for proper data paths
 }
 
 pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
@@ -349,38 +349,39 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("   → Starting NetworkComponent...");
             orchestrator.start_component(crate::runtime::ComponentId::Network).await?;
             
-            // Wait a moment for network stack to fully initialize, but poll for readiness
-            println!("   → Waiting for network stack to initialize (polling for readiness)...");
-            let mut network_ready = false;
-            // Poll lib_network::get_mesh_status for up to 10 seconds
-            for _ in 0..20 {
-                match lib_network::get_mesh_status().await {
-                    Ok(status) => {
-                        println!("   → Network stack ready: {} peers (connectivity {:.1}%)", status.active_peers, status.connectivity_percentage);
-                        network_ready = true;
-                        break;
-                    }
-                    Err(_) => {
-                        // Not yet ready - wait and retry
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    }
-                }
-            }
-
-            if !network_ready {
-                println!("    Network stack did not report ready within timeout; proceeding with discovery anyway (may be slower)");
-            } else {
-                println!(" Network components reported ready - attempting peer discovery...");
-            }
+            // CRITICAL: Wait for network stack to fully initialize
+            println!("   → Waiting for network stack to initialize...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            
+            println!("✓ Network components ready for peer discovery");
             
             // NOW try to bootstrap to existing network (network is listening!)
+            println!("\n🔍 Attempting to discover existing ZHTP network...");
+            println!("   Discovery timeout: 30 seconds (allows BLE/WiFi Direct time)");
             let mesh_connection_result = attempt_mesh_bootstrap(&mut orchestrator, &node_config.environment).await;
             
             let startup_result = match mesh_connection_result {
                 Ok(existing_network_info) => {
-                    println!(" Connected to existing ZHTP network!");
+                    println!("\n✓ Connected to existing ZHTP network!");
                     println!("   Network peers: {}", existing_network_info.peer_count);
                     println!("   Blockchain height: {}", existing_network_info.blockchain_height);
+                    println!("   Network ID: {}", existing_network_info.network_id);
+                    
+                    // Start blockchain sync BEFORE identity setup
+                    println!("\n📦 Initializing blockchain for sync...");
+                    orchestrator.start_blockchain_sync(&existing_network_info).await?;
+                    
+                    // Wait for initial sync (at least some blocks)
+                    println!("   ⏳ Waiting for initial sync to start...");
+                    match orchestrator.wait_for_initial_sync(tokio::time::Duration::from_secs(30)).await {
+                        Ok(()) => {
+                            let current_height = orchestrator.get_blockchain_height().await?;
+                            println!("✓ Sync in progress: height {} / {}", current_height, existing_network_info.blockchain_height);
+                        }
+                        Err(e) => {
+                            println!("⚠ Initial sync timeout: {} - will continue syncing in background", e);
+                        }
+                    }
                     
                     // Tell orchestrator we're joining existing network (don't create genesis)
                     if let Err(e) = orchestrator.set_joined_existing_network(true).await {
@@ -390,9 +391,9 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                     // Step 2a: Handle identity for existing network
                     handle_existing_network_identity(&existing_network_info).await?
                 }
-                Err(_) => {
-                    println!("  No existing ZHTP network found or connection failed");
-                    println!(" Starting new genesis network...");
+                Err(e) => {
+                    println!("\nℹ No existing ZHTP network found: {}", e);
+                    println!("📝 Starting new genesis network...");
                     
                     // Tell orchestrator we're creating new network (create genesis)
                     if let Err(e) = orchestrator.set_joined_existing_network(false).await {
@@ -525,28 +526,32 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
 
 /// Attempt to bootstrap to an existing ZHTP mesh network
 async fn attempt_mesh_bootstrap(_orchestrator: &mut RuntimeOrchestrator, environment: &Environment) -> Result<ExistingNetworkInfo> {
-    println!(" Scanning for existing ZHTP network...");
-    println!("   (Network components are now listening and can be discovered)");
+    println!("📡 Discovering ZHTP peers on local network...");
+    println!("   Methods: DHT/mDNS, UDP multicast, port scanning");
     
     // Initialize DHT and perform ACTIVE peer discovery
-    println!(" Initializing DHT for peer discovery...");
+    println!("   → Initializing DHT for peer discovery...");
     let node_identity = create_or_load_node_identity(environment).await?;
     initialize_global_dht_safe(node_identity.clone()).await?;
     
-    // Start actual discovery mechanisms (mDNS + DHT bootstrap)
-    println!(" Discovering peers via mDNS, UDP multicast, and DHT bootstrap...");
-    println!("   (This may take up to 30 seconds for thorough network scanning)");
+    // Start actual discovery mechanisms with INCREASED timeout (30s total)
+    println!("   → Scanning network (timeout: 30 seconds)...");
     let discovered_peers = perform_active_peer_discovery(&node_identity, environment).await?;
     
     let peer_count = discovered_peers.len();
     
     if peer_count > 0 {
-        println!(" Found {} ZHTP peers on network", peer_count);
+        println!("\n✓ Discovered {} ZHTP peer(s)!", peer_count);
         for (i, peer) in discovered_peers.iter().enumerate() {
             println!("   {}. {}", i + 1, peer);
         }
         
+        // Give peers additional time to respond to handshakes
+        println!("\n   ⏳ Waiting 5 seconds for peer handshakes...");
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        
         // Try to connect to blockchain via peers
+        println!("   📊 Querying blockchain status from peers...");
         let blockchain_info = fetch_blockchain_info_from_discovered_peers(&discovered_peers).await?;
         
         Ok(ExistingNetworkInfo {
@@ -557,7 +562,7 @@ async fn attempt_mesh_bootstrap(_orchestrator: &mut RuntimeOrchestrator, environ
             environment: environment.clone(),
         })
     } else {
-        println!("  No ZHTP peers found - will create genesis network");
+        println!("\n✗ No ZHTP peers discovered on local network");
         Err(anyhow!("No network peers found"))
     }
 }

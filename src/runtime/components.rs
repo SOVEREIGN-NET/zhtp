@@ -1483,7 +1483,7 @@ impl Component for BlockchainComponent {
         // Try to get existing global blockchain first
         match crate::runtime::blockchain_provider::get_global_blockchain().await {
             Ok(shared_blockchain) => {
-                info!("Using existing global blockchain instance");
+                info!("✓ Using existing global blockchain instance");
                 let blockchain_clone = {
                     let blockchain_guard = shared_blockchain.read().await;
                     blockchain_guard.clone()
@@ -1493,12 +1493,27 @@ impl Component for BlockchainComponent {
             Err(_) => {
                 // If no global blockchain exists, check if we should create genesis or join existing network
                 if self.joined_existing_network {
-                    info!(" Joining existing network - skipping genesis creation");
-                    info!("   Blockchain will sync from network peers after API server starts");
-                    // Will be initialized by RuntimeOrchestrator with proper configuration
+                    info!("✓ Joining existing network - blockchain already initialized for sync");
+                    info!("   Skipping genesis creation - will sync from network peers");
+                    
+                    // Blockchain was initialized early by orchestrator.start_blockchain_sync()
+                    // Just wait a moment and try to get it again
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    
+                    match crate::runtime::blockchain_provider::get_global_blockchain().await {
+                        Ok(blockchain) => {
+                            let bc = blockchain.read().await.clone();
+                            *self.blockchain.write().await = Some(bc);
+                            info!("✓ Blockchain instance acquired for sync");
+                        }
+                        Err(e) => {
+                            warn!("⚠ Blockchain not yet available: {} - will sync from network", e);
+                        }
+                    }
                 } else {
                     // No global blockchain exists AND we're not joining existing - will be initialized by RuntimeOrchestrator
-                    info!("Blockchain will be initialized by RuntimeOrchestrator for {} network...", self.environment);
+                    info!("ℹ Creating new genesis network...");
+                    info!("   Blockchain will be initialized by RuntimeOrchestrator for {} network", self.environment);
                 }
             }
         }
