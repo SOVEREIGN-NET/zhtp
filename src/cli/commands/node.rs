@@ -744,6 +744,37 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     
     let mut all_discovered_peers = Vec::new();
     
+    // Hardcoded bootstrap nodes to always try first
+    let bootstrap_nodes = vec![
+        "192.168.1.245:9333".to_string(),  // Known full node
+        // Add more bootstrap nodes here as the network grows
+    ];
+    
+    // Method 0: Try hardcoded bootstrap nodes first
+    println!("   → Method 0: Trying {} hardcoded bootstrap nodes", bootstrap_nodes.len());
+    for bootstrap_addr in &bootstrap_nodes {
+        println!("      Checking {}...", bootstrap_addr);
+        // Quick TCP connection test to see if node is reachable
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            tokio::net::TcpStream::connect(bootstrap_addr)
+        ).await {
+            Ok(Ok(_)) => {
+                println!("      ✓ Bootstrap node {} is reachable!", bootstrap_addr);
+                all_discovered_peers.push(bootstrap_addr.clone());
+            }
+            _ => {
+                println!("      ✗ Bootstrap node {} not reachable", bootstrap_addr);
+            }
+        }
+    }
+    
+    // If we found reachable bootstrap nodes, return early
+    if !all_discovered_peers.is_empty() {
+        println!("      ✓ Found {} reachable bootstrap nodes - discovery complete!", all_discovered_peers.len());
+        return Ok(all_discovered_peers);
+    }
+    
     // Method 1: DHT Enhanced Bootstrap (includes mDNS)
     println!("   → Method 1: DHT bootstrap with mDNS discovery");
     let local_public_key = lib_crypto::PublicKey::new(node_identity.public_key.clone());
@@ -850,7 +881,9 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     let std_socket: std::net::UdpSocket = socket.into();
     let socket = UdpSocket::from_std(std_socket)?;
     
+    // Configure multicast socket options
     let multicast_addr: Ipv4Addr = ZHTP_MULTICAST_ADDR.parse()?;
+    socket.set_multicast_loop_v4(true)?; // Enable loopback for testing on same machine
     socket.join_multicast_v4(multicast_addr, Ipv4Addr::UNSPECIFIED)?;
     
     let mut discovered = Vec::new();
