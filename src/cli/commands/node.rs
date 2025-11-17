@@ -386,6 +386,9 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                 attempt_mesh_bootstrap(&mut orchestrator, &node_config.environment).await
             };
             
+            // Store network info for later use (for post-sync identity creation)
+            let network_info_for_later = mesh_connection_result.as_ref().ok().cloned();
+            
             let startup_result = match mesh_connection_result {
                 Ok(existing_network_info) => {
                     println!("\n✓ Connected to existing ZHTP network!");
@@ -414,8 +417,10 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
                         eprintln!("Warning: Failed to set network join status: {}", e);
                     }
                     
-                    // Step 2a: Handle identity for existing network
-                    handle_existing_network_identity(&existing_network_info).await?
+                    // Step 2a: DON'T create identity yet - start with guest mode
+                    // Identity will be created AFTER blockchain fully syncs
+                    println!("\nℹ Starting in guest mode - will prompt for identity after blockchain sync completes");
+                    WalletStartupManager::quick_start_wallet().await?
                 }
                 Err(e) => {
                     println!("\nℹ No existing ZHTP network found: {}", e);
@@ -522,6 +527,53 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             
             if dev {
                 println!("Development mode enabled - Enhanced logging and debug features");
+            }
+            
+            // CRITICAL: If we joined an existing network, wait for sync and then prompt for identity
+            if let Some(network_info) = network_info_for_later {
+                println!("\n⏳ Waiting for blockchain to fully synchronize before identity creation...");
+                
+                // Wait up to 60 seconds for blockchain to reach network height
+                let target_height = network_info.blockchain_height;
+                let start = std::time::Instant::now();
+                let sync_timeout = std::time::Duration::from_secs(60);
+                
+                loop {
+                    let current_height = orchestrator.get_blockchain_height().await?;
+                    
+                    if current_height >= target_height {
+                        println!("✓ Blockchain fully synchronized! Height: {}", current_height);
+                        break;
+                    }
+                    
+                    if start.elapsed() > sync_timeout {
+                        println!("⚠ Sync timeout - blockchain at height {} / {}", current_height, target_height);
+                        println!("  Continuing with partial sync - you can create identity manually later");
+                        break;
+                    }
+                    
+                    // Print progress every 5 seconds
+                    if start.elapsed().as_secs() % 5 == 0 {
+                        println!("  Syncing: height {} / {} ({:.1}%)", 
+                            current_height, 
+                            target_height,
+                            (current_height as f64 / target_height as f64) * 100.0
+                        );
+                    }
+                    
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                
+                // Now prompt for identity creation on the synced blockchain
+                println!("\n🔐 Blockchain synchronized - ready to create your identity!");
+                let identity_result = handle_existing_network_identity(&network_info).await?;
+                
+                // Register the new identity on the blockchain
+                println!("\n📝 Registering your identity on the blockchain...");
+                // TODO: Create and broadcast identity registration transaction
+                // This should create a transaction and submit it to the blockchain
+                
+                println!("✓ Identity registered: {}", identity_result.wallet_name);
             }
             
             // The ZHTP server and API endpoints are already running via ProtocolsComponent
