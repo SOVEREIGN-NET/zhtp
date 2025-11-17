@@ -6387,6 +6387,49 @@ impl ZhtpUnifiedServer {
                 };
                 drop(edge_manager_guard);
                 
+                // SMART PROTOCOL SELECTION: Check if peer has TCP/QUIC address before using BLE
+                // BLE should be fallback for mobile devices, not primary sync method
+                let prefer_tcp_quic = {
+                    let peers = coordinator_for_ble.get_all_peers().await;
+                    peers.iter().any(|p| {
+                        // Check if this is the same peer with TCP/UDP address
+                        if let Some(ref pk) = p.public_key {
+                            if pk.key_id == peer_pubkey.key_id {
+                                // Found same peer - check if it has TCP/UDP/QUIC address
+                                p.addresses.iter().any(|addr| {
+                                    addr.starts_with("http://") || 
+                                    addr.starts_with("https://") ||
+                                    addr.starts_with("tcp://") ||
+                                    addr.starts_with("udp://") ||
+                                    addr.starts_with("quic://") ||
+                                    // Bootstrap addresses are plain IP:port (TCP)
+                                    addr.parse::<std::net::SocketAddr>().is_ok()
+                                })
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                };
+                
+                if prefer_tcp_quic {
+                    info!(" Peer {} has TCP/QUIC address - preferring faster protocol over BLE", 
+                          hex::encode(&peer_pubkey.key_id[..8]));
+                    info!("   BLE connection will be used as backup if TCP/QUIC sync fails");
+                    
+                    // Still register BLE as available protocol (for fallback)
+                    sync_coordinator_for_ble.register_peer_protocol(
+                        &peer_pubkey,
+                        lib_network::protocols::NetworkProtocol::BluetoothLE,
+                        sync_type
+                    ).await;
+                    
+                    // But don't initiate sync via BLE - let TCP/QUIC handle it
+                    continue;
+                }
+                
                 // Check with sync coordinator if we should sync with this peer via BLE
                 let should_sync = sync_coordinator_for_ble.register_peer_protocol(
                     &peer_pubkey,
@@ -6395,13 +6438,14 @@ impl ZhtpUnifiedServer {
                 ).await;
                 
                 if !should_sync {
-                    info!(" Skipping BLE sync with peer {} (already syncing via faster protocol)", 
+                    info!(" Skipping BLE sync with peer {} (already syncing via another protocol)", 
                           hex::encode(&peer_pubkey.key_id[..8]));
                     continue;
                 }
                 
                 info!(" Sync coordinator approved {:?} sync via BLE with peer {}", 
                       sync_type, hex::encode(&peer_pubkey.key_id[..8]));
+                info!("   Using BLE as primary protocol (no TCP/QUIC address available)");
                 
                 // Get our public key for the request
                 match mesh_router_for_ble.get_sender_public_key().await {
