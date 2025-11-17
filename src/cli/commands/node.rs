@@ -353,6 +353,27 @@ pub async fn handle_node_command(args: NodeArgs, cli: &ZhtpCli) -> Result<()> {
             println!("   → Waiting for network stack to initialize...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             
+            // EDGE NODE FIX: Start UDP multicast discovery IMMEDIATELY
+            // This was previously only started when unified_server.start() was called,
+            // but edge nodes need it running BEFORE attempting peer discovery
+            println!("   → Starting UDP multicast discovery early...");
+            let node_identity_for_multicast = create_or_load_node_identity(&node_config.environment).await?;
+            let multicast_public_key = lib_crypto::PublicKey::new(node_identity_for_multicast.public_key.clone());
+            
+            // Generate a server ID for this node
+            let server_id = uuid::Uuid::new_v4();
+            
+            // Start multicast discovery (broadcasts + listens)
+            if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
+                server_id,
+                9333,  // Default ZHTP port
+                multicast_public_key,
+            ).await {
+                println!("     Warning: UDP multicast failed to start: {}", e);
+            } else {
+                println!("     UDP Multicast: Broadcasting & listening on 224.0.1.75:37775");
+            }
+            
             println!("✓ Network components ready for peer discovery");
             
             // NOW try to bootstrap to existing network (network is listening!)
@@ -764,10 +785,10 @@ async fn perform_active_peer_discovery(node_identity: &ZhtpIdentity, environment
     
     // Method 2: Check UDP multicast announcements
     println!("   → Method 2: UDP multicast peer discovery");
-    // INCREASED TIMEOUT: UDP multicast waits up to 35s for at least one broadcast cycle
-    // (Peers broadcast every 30 seconds, so we wait 35s to guarantee catching one)
+    // SHORT TIMEOUT: Multicast broadcasting is now running, peers broadcast immediately on startup
+    // We only need to wait a few seconds to catch broadcasts from nearby peers
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(40),  // 35s listen + 5s buffer
+        tokio::time::Duration::from_secs(5),  // 5s should be plenty to catch a broadcast
         discover_via_multicast()
     ).await {
         Ok(Ok(peers)) => {
@@ -821,8 +842,8 @@ async fn discover_via_multicast() -> Result<Vec<String>> {
     
     let mut discovered = Vec::new();
     let mut buf = [0u8; 1024];
-    // INCREASED: Wait up to 35 seconds to catch at least one broadcast cycle (peers broadcast every 30s)
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(35);
+    // Wait up to 3 seconds to catch broadcasts (nodes broadcast immediately on startup)
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
     
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
