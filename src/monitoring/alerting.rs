@@ -2,7 +2,7 @@
 //! 
 //! Handles alerts, notifications, and incident management for ZHTP node
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
@@ -471,7 +471,7 @@ impl AlertManager {
 
         // Send alert for processing
         self.alert_tx.send(enhanced_alert)
-            .map_err(|e| anyhow::anyhow!("Failed to queue alert: {}", e))?;
+            .context("Failed to queue alert")?;
 
         Ok(())
     }

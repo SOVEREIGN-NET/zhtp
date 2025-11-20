@@ -2,7 +2,7 @@
 //!
 //! Clean, minimal blockchain operations using lib-blockchain patterns
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use lib_crypto::{generate_keypair, sign_message};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -501,7 +501,7 @@ impl BlockchainHandler {
 
         // Parse the provided signature (hex string)
         let signature_bytes = hex::decode(&req_data.signature)
-            .map_err(|e| anyhow::anyhow!("Invalid signature hex: {}", e))?;
+            .context("Invalid signature hex")?;
 
         // Create transaction input (simplified - consuming from sender's wallet)
         let input = lib_blockchain::TransactionInput {
@@ -556,7 +556,7 @@ impl BlockchainHandler {
         let blockchain_arc = self
             .get_blockchain()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get blockchain: {}", e))?;
+            .context("Failed to get blockchain")?;
         let mut blockchain_write = blockchain_arc.write().await;
         match blockchain_write.add_pending_transaction(transaction) {
             Ok(()) => {

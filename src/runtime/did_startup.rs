@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use lib_identity::{create_user_identity_with_wallet, create_node_device_identity, ZhtpIdentity, IdentityId};
-use lib_identity::wallets::{WalletManager, WalletId};
+use lib_identity::wallets::WalletId;
 use lib_identity::types::IdentityType;
 use lib_network::ZkDHTIntegration;
 use lib_storage::{UnifiedStorageSystem, UnifiedStorageConfig};
@@ -989,7 +989,12 @@ impl WalletStartupManager {
 
     /// Set password for a wallet
     async fn set_wallet_password(wallet_id: &WalletId, password: &str) -> Result<()> {
-        use lib_identity::wallets::WalletPasswordManager;
+        // Note: WalletPasswordManager was merged into IdentityWallets (Step 6 refactoring)
+        // Wallet password functionality is now available through IdentityWallets methods:
+        // - set_wallet_password()
+        // - verify_wallet_password()
+        // - change_wallet_password()
+        // See lib-identity/src/wallets/wallet_password_integration.rs
         
         // Note: We need the wallet seed to set password properly
         // For now, show error message that password should be set during wallet creation

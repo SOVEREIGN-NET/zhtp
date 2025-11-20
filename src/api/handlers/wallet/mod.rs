@@ -19,6 +19,7 @@ use lib_economy::wallets::{
 };
 use lib_identity::{IdentityManager, identity::ZhtpIdentity as Identity};
 use lib_crypto::Hash;
+use lib_blockchain::Blockchain;
 
 /// Helper function to create JSON responses correctly
 fn create_json_response(data: serde_json::Value) -> Result<ZhtpResponse> {
@@ -37,12 +38,23 @@ fn create_error_response(status: ZhtpStatus, message: String) -> ZhtpResponse {
 /// Complete wallet handler using MultiWalletManager
 pub struct WalletHandler {
     identity_manager: Arc<RwLock<IdentityManager>>,
+    blockchain: Arc<RwLock<Blockchain>>,
 }
 
 impl WalletHandler {
     pub fn new(identity_manager: Arc<RwLock<IdentityManager>>) -> Self {
+        // Get blockchain from global provider
+        let blockchain = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                crate::runtime::blockchain_provider::get_global_blockchain()
+                    .await
+                    .expect("Global blockchain must be initialized")
+            })
+        });
+        
         Self {
             identity_manager,
+            blockchain,
         }
     }
 }
@@ -71,6 +83,15 @@ impl ZhtpRequestHandler for WalletHandler {
             (ZhtpMethod::Get, path) if path.starts_with("/api/v1/wallet/statistics/") => {
                 let identity_id = path.strip_prefix("/api/v1/wallet/statistics/").unwrap_or("");
                 self.handle_get_statistics(identity_id).await
+            }
+            // GET /api/v1/wallet/transactions/{identity_id}
+            (ZhtpMethod::Get, path) if path.starts_with("/api/v1/wallet/transactions/") => {
+                let identity_id = path.strip_prefix("/api/v1/wallet/transactions/").unwrap_or("");
+                self.handle_get_transactions(identity_id).await
+            }
+            // POST /api/v1/wallet/send
+            (ZhtpMethod::Post, "/api/v1/wallet/send") => {
+                self.handle_simple_send(request).await
             }
             // POST /api/v1/wallet/transfer/cross-wallet
             (ZhtpMethod::Post, "/api/v1/wallet/transfer/cross-wallet") => {
@@ -142,7 +163,7 @@ struct WalletPermissionsInfo {
     requires_multisig_threshold: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct CrossWalletTransferRequest {
     identity_id: String,
     from_wallet: String,
@@ -155,6 +176,35 @@ struct CrossWalletTransferRequest {
 struct StakingRequest {
     identity_id: String,
     amount: u64,
+}
+
+#[derive(Deserialize)]
+struct SimpleSendRequest {
+    from_identity: String,
+    to_address: String,
+    amount: u64,
+    memo: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TransactionHistoryResponse {
+    identity_id: String,
+    total_transactions: usize,
+    transactions: Vec<TransactionRecord>,
+}
+
+#[derive(Serialize)]
+struct TransactionRecord {
+    tx_hash: String,
+    tx_type: String,
+    amount: u64,
+    fee: u64,
+    from_wallet: Option<String>,
+    to_address: Option<String>,
+    timestamp: u64,
+    block_height: Option<u64>,
+    status: String, // "confirmed", "pending", "failed"
+    memo: Option<String>,
 }
 
 impl WalletHandler {
@@ -717,6 +767,200 @@ impl WalletHandler {
             "privacy" => Some(WalletType::Privacy),
             _ => None,
         }
+    }
+
+    /// Get transaction history for an identity
+    async fn handle_get_transactions(&self, identity_id: &str) -> Result<ZhtpResponse> {
+        // Parse identity ID
+        let identity_hash = hex::decode(identity_id)
+            .map_err(|_| anyhow::anyhow!("Invalid identity ID format"))?;
+        
+        if identity_hash.len() != 32 {
+            return Ok(create_error_response(
+                ZhtpStatus::BadRequest,
+                "Identity ID must be 32 bytes".to_string(),
+            ));
+        }
+
+        // Get blockchain
+        let blockchain = self.blockchain.read().await;
+        
+        // Collect all transactions involving this identity
+        let mut transactions = Vec::new();
+        
+        // Search through all blocks for transactions
+        for block in &blockchain.blocks {
+            for tx in &block.transactions {
+                // Check if transaction involves this identity
+                let mut involves_identity = false;
+                
+                // Check identity_data
+                if let Some(ref identity_data) = tx.identity_data {
+                    if identity_data.did.contains(identity_id) {
+                        involves_identity = true;
+                    }
+                }
+                
+                // Check wallet_data
+                if let Some(ref wallet_data) = tx.wallet_data {
+                    if let Some(ref owner_id) = wallet_data.owner_identity_id {
+                        if hex::encode(owner_id.as_bytes()).contains(identity_id) {
+                            involves_identity = true;
+                        }
+                    }
+                }
+                
+                if involves_identity {
+                    let tx_hash = tx.hash();
+                    // Calculate total output amount (for display purposes)
+                    let output_count = tx.outputs.len() as u64;
+                    transactions.push(TransactionRecord {
+                        tx_hash: hex::encode(tx_hash.as_bytes()),
+                        tx_type: format!("{:?}", tx.transaction_type),
+                        amount: output_count, // ZK system hides amounts, show output count
+                        fee: tx.fee,
+                        from_wallet: None, // Could be enhanced
+                        to_address: None, // Could be enhanced
+                        timestamp: block.timestamp(),
+                        block_height: Some(block.height()),
+                        status: "confirmed".to_string(),
+                        memo: if tx.memo.is_empty() { None } else { Some(hex::encode(&tx.memo)) },
+                    });
+                }
+            }
+        }
+        
+        // Also check pending transactions
+        for tx in &blockchain.pending_transactions {
+            let mut involves_identity = false;
+            
+            if let Some(ref identity_data) = tx.identity_data {
+                if identity_data.did.contains(identity_id) {
+                    involves_identity = true;
+                }
+            }
+            
+            if let Some(ref wallet_data) = tx.wallet_data {
+                if let Some(ref owner_id) = wallet_data.owner_identity_id {
+                    if hex::encode(owner_id.as_bytes()).contains(identity_id) {
+                        involves_identity = true;
+                    }
+                }
+            }
+            
+            if involves_identity {
+                let tx_hash = tx.hash();
+                let output_count = tx.outputs.len() as u64;
+                transactions.push(TransactionRecord {
+                    tx_hash: hex::encode(tx_hash.as_bytes()),
+                    tx_type: format!("{:?}", tx.transaction_type),
+                    amount: output_count,
+                    fee: tx.fee,
+                    from_wallet: None,
+                    to_address: None,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    block_height: None,
+                    status: "pending".to_string(),
+                    memo: if tx.memo.is_empty() { None } else { Some(hex::encode(&tx.memo)) },
+                });
+            }
+        }
+        
+        drop(blockchain);
+        
+        // Sort by timestamp (newest first)
+        transactions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        
+        let response = TransactionHistoryResponse {
+            identity_id: identity_id.to_string(),
+            total_transactions: transactions.len(),
+            transactions,
+        };
+        
+        let json_response = serde_json::to_vec(&response)?;
+        Ok(ZhtpResponse::success_with_content_type(
+            json_response,
+            "application/json".to_string(),
+            None,
+        ))
+    }
+
+    /// Handle simple payment (matching old ZHTP API)
+    async fn handle_simple_send(&self, request: ZhtpRequest) -> Result<ZhtpResponse> {
+        let send_req: SimpleSendRequest = serde_json::from_slice(&request.body)
+            .map_err(|e| anyhow::anyhow!("Invalid request body: {}", e))?;
+
+        // Parse identity ID
+        let identity_hash = hex::decode(&send_req.from_identity)
+            .map_err(|_| anyhow::anyhow!("Invalid identity ID format"))?;
+        
+        if identity_hash.len() != 32 {
+            return Ok(create_error_response(
+                ZhtpStatus::BadRequest,
+                "Identity ID must be 32 bytes".to_string(),
+            ));
+        }
+
+        let mut identity_id_bytes = [0u8; 32];
+        identity_id_bytes.copy_from_slice(&identity_hash);
+
+        // Parse recipient address (validate format)
+        let _to_address_bytes = hex::decode(&send_req.to_address)
+            .map_err(|_| anyhow::anyhow!("Invalid recipient address format"))?;
+
+        // Get identity and primary wallet
+        let identity = match self.get_identity_by_id(&identity_id_bytes).await {
+            Some(identity) => identity,
+            None => {
+                return Ok(create_error_response(
+                    ZhtpStatus::NotFound,
+                    "Identity not found".to_string(),
+                ));
+            }
+        };
+
+        // Get primary wallet from wallet list
+        let wallets = identity.wallet_manager.list_wallets();
+        let primary_wallet = wallets.iter()
+            .find(|w| w.wallet_type == lib_identity::wallets::WalletType::Primary)
+            .ok_or_else(|| anyhow::anyhow!("No primary wallet found"))?;
+
+        // Check balance
+        if primary_wallet.balance < send_req.amount {
+            return Ok(create_error_response(
+                ZhtpStatus::PaymentRequired,
+                format!("Insufficient balance. Available: {}, Required: {}", 
+                    primary_wallet.balance, send_req.amount),
+            ));
+        }
+
+        // Create transaction using cross-wallet transfer logic
+        // This is a simplified wrapper around the existing functionality
+        let cross_wallet_req = CrossWalletTransferRequest {
+            identity_id: send_req.from_identity.clone(),
+            from_wallet: "primary".to_string(),
+            to_wallet: send_req.to_address.clone(),
+            amount: send_req.amount,
+            purpose: send_req.memo,
+        };
+
+        let request_body = serde_json::to_vec(&cross_wallet_req)?;
+        let modified_request = ZhtpRequest {
+            version: request.version,
+            method: ZhtpMethod::Post,
+            uri: "/api/v1/wallet/transfer/cross-wallet".to_string(),
+            headers: request.headers,
+            body: request_body,
+            timestamp: request.timestamp,
+            requester: request.requester,
+            auth_proof: request.auth_proof,
+        };
+
+        // Reuse existing cross-wallet transfer logic
+        self.handle_cross_wallet_transfer(modified_request).await
     }
 
     /// Generate wallet ID based on wallet type and identity

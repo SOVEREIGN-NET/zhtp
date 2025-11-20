@@ -531,7 +531,7 @@ async fn execute_storage_info(context: &CommandContext) -> Result<String> {
     }
     
     let storage = UnifiedStorageSystem::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {}", e))?;
+        .context("Failed to initialize storage")?;
     
     match storage.get_storage_stats().await {
         Ok(stats) => {
@@ -557,10 +557,10 @@ async fn execute_store_file(context: &CommandContext, path: &str) -> Result<Stri
     
     // Read file content
     let content = fs::read(path)
-        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+        .context("Failed to read file")?;
     
     let storage = UnifiedStorageSystem::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {}", e))?;
+        .context("Failed to initialize storage")?;
     
     match storage.upload_content(content, None).await {
         Ok(content_hash) => {
@@ -579,7 +579,7 @@ async fn execute_retrieve_file(context: &CommandContext, hash: &str) -> Result<S
     }
     
     let storage = UnifiedStorageSystem::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {}", e))?;
+        .context("Failed to initialize storage")?;
     
     match storage.download_content(hash).await {
         Ok(content) => {
@@ -601,7 +601,7 @@ async fn execute_list_files(context: &CommandContext) -> Result<String> {
     }
     
     let storage = UnifiedStorageSystem::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {}", e))?;
+        .context("Failed to initialize storage")?;
     
     match storage.list_user_content().await {
         Ok(files) => {
@@ -632,7 +632,7 @@ async fn execute_ubi_info(context: &CommandContext) -> Result<String> {
     }
     
     let economics = EconomicsEngine::new().await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize economics: {}", e))?;
+        .context("Failed to initialize economics")?;
     
     match get_ubi_status("current_user").await {
         Ok(ubi_status) => {

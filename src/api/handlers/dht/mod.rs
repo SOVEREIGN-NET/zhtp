@@ -972,7 +972,7 @@ impl DhtHandler {
     /// Create a default identity for DHT operations
     fn create_default_dht_identity(&self) -> ZhtpIdentity {
         use lib_identity::types::{IdentityType, AccessLevel};
-        use lib_identity::wallets::WalletManager;
+        use lib_identity::wallets::IdentityWallets;
         use lib_identity::{IdentityId, ZhtpIdentity};
         use lib_proofs::ZeroKnowledgeProof;
         use std::collections::HashMap;
@@ -1002,7 +1002,7 @@ impl DhtHandler {
                 metadata
             },
             private_data_id: None,
-            wallet_manager: WalletManager::new(identity_id),
+            wallet_manager: IdentityWallets::new(identity_id),
             did_document_hash: None,
             attestations: vec![],
             created_at: std::time::SystemTime::now()

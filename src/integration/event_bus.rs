@@ -2,7 +2,7 @@
 //! 
 //! Provides publish-subscribe messaging between ZHTP components
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -224,7 +224,7 @@ impl EventBus {
         };
 
         publisher.send(event.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to publish event: {}", e))?;
+            .context("Failed to publish event")?;
 
         self.notify_subscribers(topic, event).await?;
         Ok(())

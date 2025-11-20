@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use anyhow::Result;
+use anyhow::{Result, Context};
 use tracing::{info, error};
 
 // ZHTP protocol imports
@@ -223,7 +223,7 @@ impl ZhtpServer {
     pub async fn handle_request(&mut self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         // Process request through middleware
         if let Some(middleware_response) = self.middleware.process_request(&request).await
-            .map_err(|e| anyhow::anyhow!("Middleware error: {}", e))? {
+            .context("Middleware error")? {
             return Ok(middleware_response);
         }
         
@@ -239,7 +239,7 @@ impl ZhtpServer {
         
         // Process response through middleware
         let final_response = self.middleware.process_response(&request, response).await
-            .map_err(|e| anyhow::anyhow!("Middleware error: {}", e))?;
+            .context("Middleware error")?;
         
         Ok(final_response)
     }

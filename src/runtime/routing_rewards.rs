@@ -18,7 +18,7 @@
 //! // Processor now runs in background...
 //! ```
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
@@ -190,7 +190,7 @@ impl RoutingRewardProcessor {
             &self.environment
         )
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create reward transaction: {}", e))?;
+            .context("Failed to create reward transaction")?;
         
         info!("    Transaction created: {:?}", reward_tx.hash());
         
@@ -200,12 +200,12 @@ impl RoutingRewardProcessor {
         // Add to blockchain using global blockchain provider
         let shared_blockchain = crate::runtime::blockchain_provider::get_global_blockchain()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get global blockchain: {}", e))?;
+            .context("Failed to get global blockchain")?;
         
         {
             let mut blockchain_write = shared_blockchain.write().await;
             blockchain_write.add_pending_transaction(reward_tx.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to add transaction to blockchain: {}", e))?;
+                .context("Failed to add transaction to blockchain")?;
         }
         
         info!("    Transaction added to pending pool");
@@ -277,7 +277,7 @@ impl RoutingRewardProcessor {
         // 2. Verify blockchain is available
         let shared_blockchain = crate::runtime::blockchain_provider::get_global_blockchain()
             .await
-            .map_err(|e| anyhow::anyhow!("Blockchain unavailable: {}", e))?;
+            .context("Blockchain unavailable")?;
         
         {
             let blockchain = shared_blockchain.read().await;
