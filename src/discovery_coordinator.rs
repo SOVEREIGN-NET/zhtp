@@ -560,22 +560,26 @@ impl DiscoveryCoordinator {
         socket.join_multicast_v4(multicast_addr, interface_addr)?;
         
         info!("      Listening for multicast on {}:{}", ZHTP_MULTICAST_ADDR, ZHTP_MULTICAST_PORT);
+        info!("      DEBUG: Socket bound to 0.0.0.0:{}, joined multicast group {}", ZHTP_MULTICAST_PORT, multicast_addr);
         
         let mut discovered = Vec::new();
+        let mut packet_count = 0;
         let timeout = tokio::time::timeout(Duration::from_secs(35), async {
             let mut buf = [0u8; 1024];
             
             loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) if len > 0 => {
+                        packet_count += 1;
                         let message = String::from_utf8_lossy(&buf[..len]);
-                        debug!("      Received multicast from {}: {}", addr, message);
+                        info!("      [Packet #{}] Received multicast from {}: {}", packet_count, addr, message);
                         
                         // Filter out our own broadcasts by checking if the source IP is a local interface
                         let source_ip = addr.ip();
                         let is_local = Self::is_local_ip(&source_ip).await;
+                        info!("      DEBUG: Source IP {} is_local = {}", source_ip, is_local);
                         if is_local {
-                            debug!("      Ignoring multicast from local interface: {}", source_ip);
+                            info!("      Ignoring multicast from local interface: {}", source_ip);
                             continue;
                         }
                         
@@ -665,18 +669,28 @@ impl DiscoveryCoordinator {
         
         // Check loopback
         if ip.is_loopback() {
+            info!("      🔍 is_local_ip({}): LOOPBACK = true", ip);
             return true;
         }
         
         // Get all local network interfaces
         if let Ok(interfaces) = list_afinet_netifas() {
-            for (_name, interface_ip) in interfaces {
+            info!("      🔍 is_local_ip({}): Checking against {} local interfaces:", ip, interfaces.len());
+            for (name, interface_ip) in &interfaces {
+                info!("         Interface '{}' = {}", name, interface_ip);
+            }
+            
+            for (name, interface_ip) in interfaces {
                 if &interface_ip == ip {
+                    info!("      🔍 is_local_ip({}): ✓ MATCH on interface '{}' = TRUE (filtering out)", ip, name);
                     return true;
                 }
             }
+        } else {
+            warn!("      🔍 is_local_ip({}): Failed to list network interfaces", ip);
         }
         
+        info!("      🔍 is_local_ip({}): ✗ NO MATCH = FALSE (remote peer, will process)", ip);
         false
     }
     
