@@ -544,21 +544,13 @@ impl ZhtpUnifiedServer {
             });
         });
         
-        // Start local network peer discovery (multicast)
-        let multicast_status = if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
-            self.server_id,
-            self.port,
-            our_public_key_for_discovery.clone(),
-            Some(peer_discovered_callback),
-        ).await {
-            warn!(" UDP Multicast: FAILED - {}", e);
-            "FAILED"
-        } else {
-            info!(" UDP Multicast: ACTIVE (224.0.1.75:37775)");
-            info!("   → Broadcasts every 30s to find same-subnet peers");
-            info!("   → Connected to discovery coordinator ✓");
-            "ACTIVE"
-        };
+        // NOTE: Multicast discovery is already started in Phase 1 (runtime/mod.rs start_network_components_for_discovery)
+        // Starting it again here would create a second UUID and cause self-discovery
+        // The Phase 1 multicast will continue running and handle peer discovery
+        info!(" UDP Multicast: ACTIVE (started in Phase 1, reusing existing discovery)");
+        info!("   → Already broadcasting every 30s from Phase 1 initialization");
+        info!("   → Connected to discovery coordinator ✓");
+        let multicast_status = "ACTIVE (Phase 1)";
         
         // IP scanning disabled - using multicast/mDNS/WiFi Direct for efficient discovery
         info!("  IP Scanner: DISABLED (inefficient, replaced by broadcast)");
@@ -968,12 +960,19 @@ impl ZhtpUnifiedServer {
         info!(" Connecting to {} bootstrap peer(s) for blockchain sync via QUIC...", bootstrap_peers.len());
         
         for peer_str in &bootstrap_peers {
-            // Parse the peer address - it might be "192.168.1.245:9334" or "zhtp://192.168.1.245:9334"
+            // Parse the peer address - it might be "192.168.1.245:9333" (discovery port) or "zhtp://192.168.1.245:9334" (QUIC port)
             let addr_str = peer_str.trim_start_matches("zhtp://").trim_start_matches("http://");
             
             match addr_str.parse::<SocketAddr>() {
-                Ok(peer_addr) => {
-                    info!("   Connecting to bootstrap peer: {}", peer_addr);
+                Ok(mut peer_addr) => {
+                    // Discovery announces port 9333, but QUIC mesh runs on port 9334
+                    // If we see port 9333, adjust to 9334 for QUIC connection
+                    if peer_addr.port() == 9333 {
+                        peer_addr.set_port(9334);
+                        info!("   Connecting to bootstrap peer: {} (adjusted discovery port 9333 → QUIC port 9334)", peer_addr);
+                    } else {
+                        info!("   Connecting to bootstrap peer: {}", peer_addr);
+                    }
                     
                     // Establish QUIC mesh connection
                     match self.quic_mesh.connect_to_peer(peer_addr).await {

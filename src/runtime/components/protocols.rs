@@ -81,44 +81,25 @@ impl Component for ProtocolsComponent {
         
         info!("Initializing backend components for unified server...");
         
-        // Try to bootstrap blockchain from network
-        let blockchain = match BootstrapService::try_bootstrap_blockchain(
-            &Arc::new(RwLock::new(lib_blockchain::Blockchain::new()?)), 
-            &Arc::new(RwLock::new(lib_storage::UnifiedStorageSystem::new(create_default_storage_config()?).await?)), 
-            self.api_port, 
-            &self.environment
-        ).await {
-            Ok(synced_blockchain) => {
-                info!(" Successfully bootstrapped blockchain from network peers");
-                match crate::runtime::blockchain_provider::get_global_blockchain().await {
-                    Ok(shared) => {
-                        let mut blockchain_guard = shared.write().await;
-                        *blockchain_guard = synced_blockchain.clone();
-                        drop(blockchain_guard);
-                        shared
-                    }
-                    Err(e) => {
-                        panic!("Global blockchain not initialized: {}", e);
-                    }
-                }
+        // Use existing global blockchain (already initialized and syncing in Phase 2)
+        info!(" Using existing global blockchain instance...");
+        let blockchain = match crate::runtime::blockchain_provider::get_global_blockchain().await {
+            Ok(shared_blockchain) => {
+                info!(" ✓ Global blockchain found - continuing with synced data");
+                shared_blockchain
             }
-            Err(e) => {
-                info!("  Could not bootstrap from peers ({}), using global blockchain", e);
-                match crate::runtime::blockchain_provider::get_global_blockchain().await {
-                    Ok(shared_blockchain) => shared_blockchain,
-                    Err(_) => {
-                        info!("⏳ Waiting for BlockchainComponent...");
-                        let mut attempts = 0;
-                        loop {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                            attempts += 1;
-                            if let Ok(shared_blockchain) = crate::runtime::blockchain_provider::get_global_blockchain().await {
-                                break shared_blockchain;
-                            }
-                            if attempts >= 60 {
-                                return Err(anyhow::anyhow!("Timeout waiting for BlockchainComponent"));
-                            }
-                        }
+            Err(_) => {
+                info!("⏳ Waiting for BlockchainComponent...");
+                let mut attempts = 0;
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    attempts += 1;
+                    if let Ok(shared_blockchain) = crate::runtime::blockchain_provider::get_global_blockchain().await {
+                        info!(" ✓ Global blockchain initialized");
+                        break shared_blockchain;
+                    }
+                    if attempts >= 60 {
+                        return Err(anyhow::anyhow!("Timeout waiting for BlockchainComponent"));
                     }
                 }
             }

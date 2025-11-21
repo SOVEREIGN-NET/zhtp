@@ -571,10 +571,18 @@ impl DiscoveryCoordinator {
                         let message = String::from_utf8_lossy(&buf[..len]);
                         debug!("      Received multicast from {}: {}", addr, message);
                         
+                        // Filter out our own broadcasts by checking if the source IP is a local interface
+                        let source_ip = addr.ip();
+                        let is_local = Self::is_local_ip(&source_ip).await;
+                        if is_local {
+                            debug!("      Ignoring multicast from local interface: {}", source_ip);
+                            continue;
+                        }
+                        
                         // Try parsing as JSON NodeAnnouncement
                         if let Ok(announcement) = serde_json::from_str::<serde_json::Value>(&message) {
                             if announcement.get("node_id").is_some() && announcement.get("mesh_port").is_some() {
-                                let peer_addr = format!("{}:9333", addr.ip());
+                                let peer_addr = format!("{}:9333", source_ip);
                                 if !discovered.contains(&peer_addr) {
                                     info!("      ✓ Discovered peer via multicast: {}", peer_addr);
                                     discovered.push(peer_addr);
@@ -649,6 +657,27 @@ impl DiscoveryCoordinator {
             Ok(ip) => Ok(ip.to_string()),
             Err(_) => Ok("127.0.0.1".to_string()),
         }
+    }
+    
+    /// Check if an IP address belongs to this machine (to filter out self-discovery)
+    async fn is_local_ip(ip: &std::net::IpAddr) -> bool {
+        use local_ip_address::list_afinet_netifas;
+        
+        // Check loopback
+        if ip.is_loopback() {
+            return true;
+        }
+        
+        // Get all local network interfaces
+        if let Ok(interfaces) = list_afinet_netifas() {
+            for (_name, interface_ip) in interfaces {
+                if &interface_ip == ip {
+                    return true;
+                }
+            }
+        }
+        
+        false
     }
     
     /// Fetch blockchain info from discovered peers (COMPLETE HTTP API QUERY)

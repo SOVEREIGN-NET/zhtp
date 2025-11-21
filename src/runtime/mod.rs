@@ -2044,7 +2044,7 @@ impl RuntimeOrchestrator {
     
     /// Start only Crypto and Network components for initial peer discovery
     pub async fn start_network_components_for_discovery(&mut self) -> Result<()> {
-        use crate::runtime::components::{CryptoComponent, NetworkComponent, ProtocolsComponent};
+        use crate::runtime::components::{CryptoComponent, NetworkComponent};
         
         info!("   → Registering CryptoComponent...");
         self.register_component(Arc::new(CryptoComponent::new())).await?;
@@ -2056,14 +2056,30 @@ impl RuntimeOrchestrator {
         info!("   → Starting NetworkComponent...");
         self.start_component(ComponentId::Network).await?;
         
-        // Start ProtocolsComponent early so unified_server can broadcast for discovery
-        info!("   → Registering ProtocolsComponent (for multicast broadcasting)...");
-        let environment = self.config.environment.clone();
-        let api_port = self.config.protocols_config.api_port;
-        self.register_component(Arc::new(ProtocolsComponent::new(environment, api_port))).await?;
-        info!("   → Starting ProtocolsComponent (starts unified server + broadcasting)...");
-        self.start_component(ComponentId::Protocols).await?;
-        info!("      ✓ Multicast broadcasting started (224.0.1.75:37775)");
+        // Start multicast broadcasting directly (without full ProtocolsComponent)
+        info!("   → Starting UDP multicast peer discovery...");
+        let node_uuid = uuid::Uuid::new_v4();
+        let mesh_port = self.config.network_config.mesh_port;
+        
+        // Generate a temporary public key for discovery
+        let keypair = lib_crypto::generate_keypair()?;
+        let public_key = lib_crypto::PublicKey {
+            dilithium_pk: keypair.public_key.dilithium_pk.clone(),
+            kyber_pk: keypair.public_key.kyber_pk.clone(),
+            key_id: keypair.public_key.key_id.clone(),
+        };
+        
+        // Start local discovery service (broadcasts immediately, then every 30s)
+        if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
+            node_uuid,
+            mesh_port,
+            public_key,
+            None, // No callback needed for discovery phase
+        ).await {
+            warn!("      Failed to start local discovery: {}", e);
+        } else {
+            info!("      ✓ Multicast broadcasting started (224.0.1.75:37775)");
+        }
         
         Ok(())
     }

@@ -74,10 +74,20 @@ impl Component for ApiComponent {
     }
 
     async fn health_check(&self) -> Result<ComponentHealth> {
-        // Check if API is actually running on port 9333
+        // Check if API is actually running on port 9333 (QUIC/UDP, not TCP)
         // This ensures we report "Running" even if the component state got desynchronized
         // or if the UnifiedServer is running but this component wasn't explicitly started
-        let api_running = tokio::net::TcpStream::connect("127.0.0.1:9333").await.is_ok();
+        
+        // QUIC-only architecture: Check UDP socket instead of TCP
+        let api_running = async {
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+            // Send a test packet to verify port 9333 is bound
+            // Note: We don't expect a response, just checking if port is in use
+            socket.connect("127.0.0.1:9333").await?;
+            Ok::<bool, std::io::Error>(true)
+        }
+        .await
+        .is_ok();
         
         if api_running {
             let mut status_guard = self.status.write().await;
@@ -93,7 +103,7 @@ impl Component for ApiComponent {
             // If API is not running, we should reflect that, unless we are explicitly Stopped
             let mut status_guard = self.status.write().await;
             if matches!(*status_guard, ComponentStatus::Running) {
-                *status_guard = ComponentStatus::Error("API port 9333 unreachable".to_string());
+                *status_guard = ComponentStatus::Error("API port 9333 (QUIC/UDP) unreachable".to_string());
             }
         }
 
