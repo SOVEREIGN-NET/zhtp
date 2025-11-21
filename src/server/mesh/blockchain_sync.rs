@@ -175,7 +175,7 @@ impl MeshRouter {
                         let conns = connections.read().await;
                         let mut success_count = 0;
                         
-                        if let Some(ref quic) = *quic_protocol.read().await {
+                        if let Some(quic) = quic_protocol.read().await.as_ref() {
                             for (_peer_key, connection) in conns.iter() {
                                 match &connection.protocol {
                                     NetworkProtocol::QUIC => {
