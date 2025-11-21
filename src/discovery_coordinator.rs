@@ -502,21 +502,67 @@ impl DiscoveryCoordinator {
     async fn perform_active_discovery(
         &self,
         _node_identity: &lib_identity::ZhtpIdentity,
-        _environment: &crate::config::Environment,
+        environment: &crate::config::Environment,
     ) -> Result<Vec<String>> {
         let mut discovered_peers = Vec::new();
         
-        // Method 1: UDP Multicast
-        info!("   → Trying UDP multicast...");
-        match self.discover_via_multicast().await {
-            Ok(peers) => {
-                info!("      Found {} peer(s) via multicast", peers.len());
-                discovered_peers.extend(peers);
+        // Method 0: Bootstrap peers from config (ALWAYS TRY FIRST)
+        let env_config = environment.get_default_config();
+        if !env_config.network_settings.bootstrap_peers.is_empty() {
+            info!("   → Trying configured bootstrap peers ({} addresses)...", env_config.network_settings.bootstrap_peers.len());
+            for peer in &env_config.network_settings.bootstrap_peers {
+                info!("      Checking bootstrap peer: {}", peer);
+                
+                // Skip localhost addresses (can't discover ourselves)
+                if peer.starts_with("127.0.0.1") || peer.starts_with("localhost") {
+                    info!("      Skipping localhost address: {}", peer);
+                    continue;
+                }
+                
+                // Skip our own IP address (prevent self-discovery)
+                if let Ok(local_ip) = self.get_local_ip().await {
+                    if peer.starts_with(&local_ip) {
+                        info!("      Skipping own IP address: {}", peer);
+                        continue;
+                    }
+                }
+                
+                // Verify peer is reachable
+                if let Ok(socket_addr) = peer.as_str().parse::<std::net::SocketAddr>() {
+                    // Quick TCP check on port 9333
+                    match tokio::time::timeout(
+                        Duration::from_secs(2),
+                        tokio::net::TcpStream::connect(socket_addr)
+                    ).await {
+                        Ok(Ok(_)) => {
+                            info!("      ✓ Bootstrap peer {} is reachable", peer);
+                            discovered_peers.push(peer.clone());
+                        }
+                        Ok(Err(e)) => {
+                            warn!("      ✗ Bootstrap peer {} unreachable: {}", peer, e);
+                        }
+                        Err(_) => {
+                            warn!("      ✗ Bootstrap peer {} timeout", peer);
+                        }
+                    }
+                }
             }
-            Err(e) => warn!("      Multicast failed: {}", e),
+            info!("      Found {} peer(s) via bootstrap config", discovered_peers.len());
         }
         
-        // Method 2: Port scanning (fallback)
+        // Method 1: UDP Multicast (if bootstrap didn't find peers)
+        if discovered_peers.is_empty() {
+            info!("   → Trying UDP multicast...");
+            match self.discover_via_multicast().await {
+                Ok(peers) => {
+                    info!("      Found {} peer(s) via multicast", peers.len());
+                    discovered_peers.extend(peers);
+                }
+                Err(e) => warn!("      Multicast failed: {}", e),
+            }
+        }
+        
+        // Method 2: Port scanning (last resort fallback)
         if discovered_peers.is_empty() {
             info!("   → Trying port scan...");
             match self.scan_local_subnet().await {
