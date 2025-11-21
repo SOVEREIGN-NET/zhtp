@@ -565,13 +565,15 @@ impl DiscoveryCoordinator {
         let timeout = tokio::time::timeout(Duration::from_secs(35), async {
             let mut buf = [0u8; 1024];
             
-            for _ in 0..100 {
+            loop {
                 match socket.recv_from(&mut buf).await {
                     Ok((len, addr)) if len > 0 => {
                         let message = String::from_utf8_lossy(&buf[..len]);
-                        if message.starts_with("ZHTP_NODE:") {
-                            let peer_info: Vec<&str> = message.split(':').collect();
-                            if peer_info.len() >= 2 {
+                        debug!("      Received multicast from {}: {}", addr, message);
+                        
+                        // Try parsing as JSON NodeAnnouncement
+                        if let Ok(announcement) = serde_json::from_str::<serde_json::Value>(&message) {
+                            if announcement.get("node_id").is_some() && announcement.get("mesh_port").is_some() {
                                 let peer_addr = format!("{}:9333", addr.ip());
                                 if !discovered.contains(&peer_addr) {
                                     info!("      ✓ Discovered peer via multicast: {}", peer_addr);
@@ -580,7 +582,17 @@ impl DiscoveryCoordinator {
                             }
                         }
                     }
-                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                    Ok((_, _)) => {
+                        // Empty packet, ignore
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        debug!("      Multicast recv error: {}", e);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         });

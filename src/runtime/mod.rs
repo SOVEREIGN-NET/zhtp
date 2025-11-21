@@ -2044,7 +2044,7 @@ impl RuntimeOrchestrator {
     
     /// Start only Crypto and Network components for initial peer discovery
     pub async fn start_network_components_for_discovery(&mut self) -> Result<()> {
-        use crate::runtime::components::{CryptoComponent, NetworkComponent};
+        use crate::runtime::components::{CryptoComponent, NetworkComponent, ProtocolsComponent};
         
         info!("   → Registering CryptoComponent...");
         self.register_component(Arc::new(CryptoComponent::new())).await?;
@@ -2055,6 +2055,15 @@ impl RuntimeOrchestrator {
         self.register_component(Arc::new(NetworkComponent::new())).await?;
         info!("   → Starting NetworkComponent...");
         self.start_component(ComponentId::Network).await?;
+        
+        // Start ProtocolsComponent early so unified_server can broadcast for discovery
+        info!("   → Registering ProtocolsComponent (for multicast broadcasting)...");
+        let environment = self.config.environment.clone();
+        let api_port = self.config.protocols_config.api_port;
+        self.register_component(Arc::new(ProtocolsComponent::new(environment, api_port))).await?;
+        info!("   → Starting ProtocolsComponent (starts unified server + broadcasting)...");
+        self.start_component(ComponentId::Protocols).await?;
+        info!("      ✓ Multicast broadcasting started (224.0.1.75:37775)");
         
         Ok(())
     }
