@@ -22,7 +22,7 @@ pub mod core;
 pub mod helpers;
 pub mod monitoring;
 pub mod blockchain_sync;
-pub mod udp_handler;
+// udp_handler removed - using QUIC only
 pub mod identity_api;
 pub mod authentication_wrapper;
 pub mod routing_integration;

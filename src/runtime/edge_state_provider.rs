@@ -84,7 +84,7 @@ pub async fn is_global_edge_state_available() -> bool {
 pub async fn add_header(header: BlockHeader) -> Result<()> {
     let edge_state = get_global_edge_state().await?;
     let mut edge_state_lock = edge_state.write().await;
-    edge_state_lock.add_header(header);
+    edge_state_lock.add_header(header)?;  // Propagate validation error
     Ok(())
 }
 

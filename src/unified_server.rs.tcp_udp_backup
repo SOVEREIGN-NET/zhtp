@@ -952,12 +952,390 @@ impl ZhtpUnifiedServer {
     }
     
     /// Start TCP connection handler (HTTP + TCP mesh + WiFi + Bootstrap)
-
-
-
-
+    async fn start_tcp_listener(&self) -> Result<()> {
+        let listener = self.tcp_listener.as_ref().unwrap().clone();
+        let http_router = Arc::new(self.http_router.clone());
+        let mesh_router = Arc::new(self.mesh_router.clone());
+        let wifi_router = Arc::new(self.wifi_router.clone());
+        let bluetooth_router = Arc::new(self.bluetooth_router.clone());
+        // ❌ REMOVED: bootstrap_router - using server_id directly
+        let server_id = self.server_id; // ✅ ADD: Pass server_id for bootstrap
+        let is_running = self.is_running.clone();
+        
+        tokio::spawn(async move {
+            info!("TCP listener started - accepting connections...");
+            
+            while *is_running.read().await {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        // Skip self-connections
+                        if Self::is_self_connection(&addr) {
+                            debug!(" Skipping self-connection from {}", addr);
+                            continue;
+                        }
+                        
+                        debug!(" New TCP connection from: {}", addr);
+                        
+                        let http_router = http_router.clone();
+                        let mesh_router = mesh_router.clone();
+                        let wifi_router = wifi_router.clone();
+                        let bluetooth_router = bluetooth_router.clone();
+                        // ❌ REMOVED: bootstrap_router clone - pass server_id directly
+                        
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_tcp_connection(
+                                stream, 
+                                addr,
+                                http_router,
+                                mesh_router,
+                                wifi_router,
+                                bluetooth_router,
+                                server_id, // ✅ CHANGED: Pass server_id instead of bootstrap_router
+                            ).await {
+                                error!("TCP connection error: {}", e);
+                            }
+                        });
+                    },
+                    Err(e) => {
+                        error!("Failed to accept TCP connection: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            
+            info!("TCP listener stopped");
+        });
+        
+        Ok(())
+    }
     
-    /// Connect to bootstrap peers and initiate blockchain sync via QUIC
+    /// Handle individual TCP connection with protocol detection
+    async fn handle_tcp_connection(
+        mut stream: TcpStream,
+        addr: SocketAddr,
+        http_router: Arc<HttpRouter>,
+        mesh_router: Arc<MeshRouter>,
+        wifi_router: Arc<WiFiRouter>,
+        bluetooth_router: Arc<BluetoothRouter>,
+        server_id: Uuid, // ✅ CHANGED: Pass server_id instead of BootstrapRouter
+    ) -> Result<()> {
+        // Peek at first bytes to detect protocol
+        let mut buffer = [0; 512];
+        
+        // Use a small timeout for peeking
+        let peek_result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(1000),
+            stream.peek(&mut buffer)
+        ).await;
+        
+        let bytes_read = match peek_result {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                warn!("Failed to peek TCP stream: {}", e);
+                return Ok(());
+            },
+            Err(_) => {
+                warn!("Timeout peeking TCP stream from: {}", addr);
+                return Ok(());
+            }
+        };
+        
+        if bytes_read == 0 {
+            return Ok(());
+        }
+        
+        let protocol = Self::detect_tcp_protocol(&buffer[..bytes_read]);
+        debug!("Detected protocol: {:?} from {}", protocol, addr);
+        
+        match protocol {
+            IncomingProtocol::HTTP => {
+                info!("HTTP request from: {}", addr);
+                http_router.handle_http_request(stream, addr).await
+            },
+            IncomingProtocol::ZhtpMeshTcp => {
+                info!("TCP mesh connection from: {}", addr);
+                mesh_router.handle_tcp_mesh(stream, addr).await
+            },
+            IncomingProtocol::WiFiDirect => {
+                info!("WiFi Direct connection from: {}", addr);
+                wifi_router.handle_wifi_direct(stream, addr).await
+            },
+            IncomingProtocol::Bluetooth => {
+                info!("Bluetooth connection from phone: {}", addr);
+                bluetooth_router.handle_bluetooth_connection(stream, addr, &mesh_router).await
+            },
+            IncomingProtocol::Bootstrap | IncomingProtocol::Unknown => {
+                info!("Bootstrap connection from: {}", addr);
+                // ✅ REFACTORED: Use lib-network bootstrap handler
+                lib_network::bootstrap::handle_tcp_bootstrap_connection(&mut stream, addr, server_id).await
+            },
+            _ => {
+                warn!("❓ Unknown TCP protocol from: {}", addr);
+                Ok(())
+            }
+        }
+    }
+    
+    /// Detect protocol type from TCP stream data
+    fn detect_tcp_protocol(buffer: &[u8]) -> IncomingProtocol {
+        let data = String::from_utf8_lossy(buffer);
+        
+        // HTTP detection
+        if data.starts_with("GET ") || data.starts_with("POST ") || 
+           data.starts_with("PUT ") || data.starts_with("DELETE ") ||
+           data.starts_with("OPTIONS ") || data.starts_with("HEAD ") {
+            return IncomingProtocol::HTTP;
+        }
+        
+        // ZHTP mesh detection (text protocol)
+        if data.starts_with("ZHTP/1.0 MESH") {
+            return IncomingProtocol::ZhtpMeshTcp;
+        }
+        
+        // Binary mesh handshake detection (bincode format from local discovery)
+        // Bincode handshakes contain version byte + node_id + public_key + protocols
+        // With full cryptographic public keys, they can be 1000-2000 bytes
+        if buffer.len() >= 20 && buffer.len() < 4096 {
+            // Try to deserialize as MeshHandshake
+            if let Ok(_handshake) = bincode::deserialize::<lib_network::discovery::local_network::MeshHandshake>(buffer) {
+                return IncomingProtocol::ZhtpMeshTcp;
+            }
+        }
+        
+        // WiFi Direct detection
+        if data.contains("WIFI-DIRECT") || data.contains("P2P-DEVICE") {
+            return IncomingProtocol::WiFiDirect;
+        }
+        
+        // Bluetooth detection (phone connections often include these markers)
+        if data.contains("BLUETOOTH") || data.contains("BT-") || 
+           data.contains("ZHTP-PHONE") || data.contains("RFCOMM") {
+            return IncomingProtocol::Bluetooth;
+        }
+        
+        // Default to bootstrap for unknown TCP connections
+        IncomingProtocol::Bootstrap
+    }
+    
+    /// Start UDP packet handler (UDP mesh + Bootstrap)
+    async fn start_udp_listener(&self) -> Result<()> {
+        let socket = self.udp_socket.as_ref().unwrap().clone();
+        let mesh_router = Arc::new(self.mesh_router.clone());
+        // ❌ REMOVED: bootstrap_router - using lib-network bootstrap
+        let server_id = self.server_id; // ✅ ADD: server_id for bootstrap
+        let http_port = self.port; // ✅ ADD: HTTP port for bootstrap response
+        let zhtp_port = self.port; // ✅ ADD: ZHTP port for bootstrap response
+        let is_running = self.is_running.clone();
+        
+        tokio::spawn(async move {
+            info!("UDP listener started - receiving packets...");
+            let mut buffer = [0; 8192];
+            
+            while *is_running.read().await {
+                match socket.recv_from(&mut buffer).await {
+                    Ok((len, addr)) => {
+                        // Skip self-connections
+                        if Self::is_self_connection(&addr) {
+                            debug!(" Skipping self-connection from {}", addr);
+                            continue;
+                        }
+                        
+                        debug!(" UDP packet from: {} ({} bytes)", addr, len);
+                        
+                        let data = &buffer[..len];
+                        let protocol = Self::detect_udp_protocol(data);
+                        
+                        match protocol {
+                            IncomingProtocol::ZhtpMeshUdp => {
+                                info!("UDP mesh packet from: {}", addr);
+                                match mesh_router.handle_udp_mesh(data, addr).await {
+                                    Ok(Some(response)) => {
+                                        // Send response back to client
+                                        if let Err(e) = socket.send_to(&response, addr).await {
+                                            warn!("Failed to send UDP mesh response: {}", e);
+                                        } else {
+                                            info!("Sent ZHTP mesh response to: {}", addr);
+                                        }
+                                    },
+                                    Ok(None) => {
+                                        // No response needed
+                                    },
+                                    Err(e) => {
+                                        warn!("UDP mesh error: {}", e);
+                                    }
+                                }
+                            },
+                            IncomingProtocol::Bootstrap | IncomingProtocol::Unknown => {
+                                info!("UDP bootstrap packet from: {}", addr);
+                                // ✅ REFACTORED: Use lib-network bootstrap handler
+                                // Create bootstrap response using lib-network
+                                let response_data = serde_json::json!({
+                                    "server_id": server_id.to_string(),
+                                    "protocol": "ZHTP/1.0",
+                                    "capabilities": ["blockchain_api", "storage_api", "identity_api", "mesh_networking"],
+                                    "endpoints": {
+                                        "http": format!("http://localhost:{}", http_port),
+                                        "zhtp": format!("zhtp://localhost:{}", zhtp_port),
+                                    },
+                                    "timestamp": std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                });
+                                
+                                if let Ok(response_bytes) = serde_json::to_vec(&response_data) {
+                                    if let Err(e) = socket.send_to(&response_bytes, addr).await {
+                                        warn!("Failed to send UDP bootstrap response: {}", e);
+                                    } else {
+                                        debug!("Bootstrap response sent successfully to {}", addr);
+                                    }
+                                }
+                            },
+                            _ => {
+                                debug!("❓ Unknown UDP packet from: {}", addr);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        error!("UDP receive error: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            
+            info!("UDP listener stopped");
+        });
+        
+        Ok(())
+    }
+    
+    /// Detect protocol type from UDP packet data
+    fn detect_udp_protocol(data: &[u8]) -> IncomingProtocol {
+        // Try to parse as bincode ZhtpMeshMessage first (PeerAnnouncement, NewBlock, etc.)
+        if let Ok(_) = bincode::deserialize::<ZhtpMeshMessage>(data) {
+            return IncomingProtocol::ZhtpMeshUdp;
+        }
+        
+        // Try to parse as text second (bootstrap, JSON)
+        if let Ok(text) = std::str::from_utf8(data) {
+            // ZHTP mesh JSON detection
+            if text.contains("\"ZhtpRequest\"") || text.contains("\"ZhtpResponse\"") {
+                return IncomingProtocol::ZhtpMeshUdp;
+            }
+            
+            // JSON structure indicates mesh protocol
+            if text.trim().starts_with('{') && 
+               (text.contains("\"requester\"") || text.contains("\"mesh\"")) {
+                return IncomingProtocol::ZhtpMeshUdp;
+            }
+        }
+        
+        // Default to bootstrap for other UDP packets
+        IncomingProtocol::Bootstrap
+    }
+    
+    /// Establish UDP mesh connection to a peer
+    pub async fn establish_udp_connection(&self, peer_addr: SocketAddr) -> Result<()> {
+        info!(" Establishing UDP mesh connection to {}", peer_addr);
+        
+        // Get our node's public key from identity manager
+        let mgr = self.identity_manager.read().await;
+        let sender_pubkey = if let Some(identity) = mgr.list_identities().first() {
+            let mut key_id = [0u8; 32];
+            let len = identity.public_key.len().min(32);
+            key_id[..len].copy_from_slice(&identity.public_key[..len]);
+            
+            lib_crypto::PublicKey {
+                key_id,
+                dilithium_pk: vec![],
+                kyber_pk: vec![],
+            }
+        } else {
+            return Err(anyhow::anyhow!("No identity available for PeerAnnouncement"));
+        };
+        drop(mgr); // Release lock
+        
+        // Sign with auth manager's Dilithium2 key instead of identity manager
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let mut sig_data = Vec::new();
+        sig_data.extend_from_slice(&sender_pubkey.key_id);
+        sig_data.extend_from_slice(&timestamp.to_le_bytes());
+        
+        let signature = if let Some(ref auth_mgr) = *self.mesh_router.zhtp_auth_manager.read().await {
+            match auth_mgr.sign_message(&sig_data) {
+                Ok(sig) => sig,
+                Err(e) => {
+                    warn!("Failed to sign PeerAnnouncement: {}", e);
+                    return Err(anyhow::anyhow!("Signature failed: {}", e));
+                }
+            }
+        } else {
+            warn!("Auth manager not initialized, using empty signature");
+            vec![] // Fallback to empty signature if auth manager not initialized
+        };
+        
+        // Create a MeshConnection entry for this peer (we'll update it when they respond)
+        let current_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let _connection = MeshConnection {
+            peer_id: sender_pubkey.clone(),
+            protocol: lib_network::protocols::NetworkProtocol::UDP,
+            peer_address: Some(peer_addr.to_string()),
+            signal_strength: 1.0,
+            bandwidth_capacity: 1_000_000,
+            latency_ms: 50,
+            connected_at: current_timestamp,
+            data_transferred: 0,
+            tokens_earned: 0,
+            stability_score: 1.0,
+            zhtp_authenticated: false,
+            quantum_secure: true,
+            peer_dilithium_pubkey: None,
+            kyber_shared_secret: None,
+            trust_score: 0.5,
+        };
+        
+        // Send a PeerAnnouncement message to establish the connection
+        let announcement = lib_network::types::mesh_message::ZhtpMeshMessage::PeerAnnouncement {
+            sender: sender_pubkey,
+            timestamp,
+            signature,
+        };
+        
+        // Serialize and send via UDP
+        if let Some(ref socket) = self.udp_socket.as_ref() {
+            match bincode::serialize(&announcement) {
+                Ok(data) => {
+                    match socket.send_to(&data, peer_addr).await {
+                        Ok(bytes_sent) => {
+                            info!(" Sent signed PeerAnnouncement to {} ({} bytes)", peer_addr, bytes_sent);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            warn!("Failed to send PeerAnnouncement to {}: {}", peer_addr, e);
+                            Err(anyhow::anyhow!("UDP send failed: {}", e))
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to serialize PeerAnnouncement: {}", e);
+                    Err(anyhow::anyhow!("Serialization failed: {}", e))
+                }
+            }
+        } else {
+            warn!("UDP socket not available");
+            Err(anyhow::anyhow!("UDP socket not initialized"))
+        }
+    }
+    
+    /// FIX: Connect to bootstrap peers and initiate blockchain sync
     /// This method should be called after the server starts to establish outgoing connections
     pub async fn connect_to_bootstrap_peers(&self, bootstrap_peers: Vec<String>) -> Result<()> {
         if bootstrap_peers.is_empty() {
@@ -965,24 +1343,22 @@ impl ZhtpUnifiedServer {
             return Ok(());
         }
         
-        info!(" Connecting to {} bootstrap peer(s) for blockchain sync via QUIC...", bootstrap_peers.len());
+        info!(" Connecting to {} bootstrap peer(s) for blockchain sync...", bootstrap_peers.len());
         
         for peer_str in &bootstrap_peers {
-            // Parse the peer address - it might be "192.168.1.245:9334" or "zhtp://192.168.1.245:9334"
+            // Parse the peer address - it might be "192.168.1.245:9333" or "zhtp://192.168.1.245:9333"
             let addr_str = peer_str.trim_start_matches("zhtp://").trim_start_matches("http://");
             
             match addr_str.parse::<SocketAddr>() {
                 Ok(peer_addr) => {
                     info!("   Connecting to bootstrap peer: {}", peer_addr);
                     
-                    // Establish QUIC mesh connection
-                    match self.quic_mesh.connect_to_peer(peer_addr).await {
-                        Ok(()) => {
-                            info!("   ✓ Connected to bootstrap peer {} via QUIC", peer_addr);
-                        }
-                        Err(e) => {
-                            warn!("   Failed to connect to bootstrap peer {}: {}", peer_addr, e);
-                        }
+                    // Establish UDP mesh connection - this will send PeerAnnouncement
+                    // and trigger blockchain sync when the peer responds
+                    if let Err(e) = self.establish_udp_connection(peer_addr).await {
+                        warn!("   Failed to connect to {}: {}", peer_addr, e);
+                    } else {
+                        info!("   ✓ Connected to bootstrap peer {}", peer_addr);
                     }
                 }
                 Err(e) => {
@@ -991,7 +1367,7 @@ impl ZhtpUnifiedServer {
             }
         }
         
-        info!(" Bootstrap peer connections completed");
+        info!(" Bootstrap peer connections initiated");
         Ok(())
     }
     
@@ -1000,6 +1376,10 @@ impl ZhtpUnifiedServer {
         info!("Stopping ZHTP Unified Server...");
         
         *self.is_running.write().await = false;
+        
+        // Drop listeners to stop accepting new connections
+        self.tcp_listener = None;
+        self.udp_socket = None;
         
         info!("ZHTP Unified Server stopped");
         Ok(())

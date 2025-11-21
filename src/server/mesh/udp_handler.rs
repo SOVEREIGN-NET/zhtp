@@ -295,8 +295,9 @@ impl MeshRouter {
                                 let chunk_count = chunk_messages.len();
                                 info!("📤 Sending {} blockchain chunks to {}", chunk_count, addr);
                                 
-                                let socket_guard = self.udp_socket.read().await;
-                                if let Some(ref socket) = *socket_guard {
+                                // UDP removed - QUIC handles chunked transfers internally
+                                warn!("UDP socket removed - blockchain chunks should be sent via QUIC");
+                                if false { // UDP socket removed
                                     let mut successful_chunks = 0;
                                     let mut failed_chunks = 0;
                                     
@@ -1152,7 +1153,8 @@ impl MeshRouter {
             
             match &connection.protocol {
                 NetworkProtocol::UDP => {
-                    if let Some(ref sock) = *self.udp_socket.read().await {
+                    // UDP removed - should use QUIC protocol instead
+                    if false { // UDP socket removed
                         if let Some(peer_addr_str) = &connection.peer_address {
                             if let Ok(addr) = peer_addr_str.parse::<SocketAddr>() {
                                 if sock.send_to(&serialized, addr).await.is_ok() {

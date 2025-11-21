@@ -26,7 +26,7 @@ impl MeshRouter {
         let connections = self.connections.clone();
         let recent_blocks = self.recent_blocks.clone();
         let recent_transactions = self.recent_transactions.clone();
-        let udp_socket = self.udp_socket.clone();
+        let quic_protocol = self.quic_protocol.clone();
         let broadcast_metrics = self.broadcast_metrics.clone();
         let identity_manager = self.identity_manager.clone();
         
@@ -85,24 +85,21 @@ impl MeshRouter {
                             }
                         };
                         
-                        // Broadcast to all connected peers
+                        // Broadcast to all connected peers via QUIC
                         let conns = connections.read().await;
                         let mut success_count = 0;
                         
-                        for (_peer_key, connection) in conns.iter() {
-                            match &connection.protocol {
-                                NetworkProtocol::UDP => {
-                                    if let Some(ref sock) = *udp_socket.read().await {
-                                        if let Some(peer_addr_str) = &connection.peer_address {
-                                            if let Ok(addr) = peer_addr_str.parse::<SocketAddr>() {
-                                                if sock.send_to(&serialized, addr).await.is_ok() {
-                                                    success_count += 1;
-                                                }
-                                            }
+                        if let Some(ref quic) = *quic_protocol.read().await {
+                            for (_peer_key, connection) in conns.iter() {
+                                match &connection.protocol {
+                                    NetworkProtocol::QUIC => {
+                                        // Use peer_id (PublicKey) to send via QUIC
+                                        if quic.send_to_peer(&connection.peer_id.key_id, message.clone()).await.is_ok() {
+                                            success_count += 1;
                                         }
                                     }
+                                    _ => {} // Other protocols: BluetoothLE, BluetoothClassic, WiFiDirect
                                 }
-                                _ => {} // Other protocols: BluetoothLE, BluetoothClassic, WiFiDirect
                             }
                         }
                         
@@ -178,20 +175,16 @@ impl MeshRouter {
                         let conns = connections.read().await;
                         let mut success_count = 0;
                         
-                        for (_peer_key, connection) in conns.iter() {
-                            match &connection.protocol {
-                                NetworkProtocol::UDP => {
-                                    if let Some(ref sock) = *udp_socket.read().await {
-                                        if let Some(peer_addr_str) = &connection.peer_address {
-                                            if let Ok(addr) = peer_addr_str.parse::<SocketAddr>() {
-                                                if sock.send_to(&serialized, addr).await.is_ok() {
-                                                    success_count += 1;
-                                                }
-                                            }
+                        if let Some(ref quic) = *quic_protocol.read().await {
+                            for (_peer_key, connection) in conns.iter() {
+                                match &connection.protocol {
+                                    NetworkProtocol::QUIC => {
+                                        if quic.send_to_peer(&connection.peer_id.key_id, message.clone()).await.is_ok() {
+                                            success_count += 1;
                                         }
                                     }
+                                    _ => {}
                                 }
-                                _ => {} // TODO: Add other protocols as needed
                             }
                         }
                         
@@ -224,10 +217,7 @@ impl MeshRouter {
         *self.bluetooth_protocol.write().await = Some(protocol);
     }
     
-    /// Set UDP socket for sending messages
-    pub async fn set_udp_socket(&self, socket: Arc<tokio::net::UdpSocket>) {
-        *self.udp_socket.write().await = Some(socket);
-    }
+    // UDP socket removed - using QUIC only
     
     /// Set QUIC protocol for mesh communication
     pub async fn set_quic_protocol(&self, quic: Arc<lib_network::protocols::quic_mesh::QuicMeshProtocol>) {
@@ -240,7 +230,17 @@ impl MeshRouter {
         &self, 
         provider: Arc<dyn lib_network::blockchain_sync::BlockchainProvider>
     ) {
-        *self.blockchain_provider.write().await = Some(provider);
+        *self.blockchain_provider.write().await = Some(provider.clone());
+        
+        // Also inject into QUIC protocol's message handler
+        if let Some(quic) = self.quic_protocol.read().await.as_ref() {
+            if let Some(handler) = quic.message_handler.as_ref() {
+                let mut handler_lock = handler.write().await;
+                handler_lock.set_blockchain_provider(provider.clone());
+                info!("✅ Blockchain provider injected into QUIC MeshMessageHandler");
+            }
+        }
+        
         info!("⛓️ Blockchain provider configured for edge node sync");
     }
     
@@ -308,13 +308,13 @@ impl MeshRouter {
         
         // Send based on protocol
         match &connection.protocol {
-            NetworkProtocol::UDP => {
-                if let Some(ref sock) = *self.udp_socket.read().await {
-                    let addr: SocketAddr = peer_address.parse()
-                        .context("Invalid peer address")?;
-                    sock.send_to(&serialized, addr).await
-                        .context("Failed to send UDP message")?;
-                    info!("✅ Message sent via UDP to {}", addr);
+            NetworkProtocol::QUIC => {
+                if let Some(ref quic) = *self.quic_protocol.read().await {
+                    quic.send_to_peer(&connection.peer_id.key_id, message).await
+                        .context("Failed to send QUIC message")?;
+                    info!("✅ Message sent via QUIC to peer {:?}", &connection.peer_id.key_id[..8]);
+                } else {
+                    return Err(anyhow::anyhow!("QUIC protocol not initialized"));
                 }
             }
             _ => {
@@ -333,20 +333,16 @@ impl MeshRouter {
         let connections = self.connections.read().await;
         let mut success_count = 0;
         
-        for (_peer_key, connection) in connections.iter() {
-            match &connection.protocol {
-                NetworkProtocol::UDP => {
-                    if let Some(ref sock) = *self.udp_socket.read().await {
-                        if let Some(peer_addr_str) = &connection.peer_address {
-                            if let Ok(addr) = peer_addr_str.parse::<SocketAddr>() {
-                                if sock.send_to(&serialized, addr).await.is_ok() {
-                                    success_count += 1;
-                                }
-                            }
+        if let Some(ref quic) = *self.quic_protocol.read().await {
+            for (_peer_key, connection) in connections.iter() {
+                match &connection.protocol {
+                    NetworkProtocol::QUIC => {
+                        if quic.send_to_peer(&connection.peer_id.key_id, message.clone()).await.is_ok() {
+                            success_count += 1;
                         }
                     }
+                    _ => {} // Other protocols
                 }
-                _ => {} // Other protocols
             }
         }
         

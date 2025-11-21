@@ -526,11 +526,11 @@ impl RuntimeOrchestrator {
         // Create genesis validator from USER identity (not node identity)
         // NOTE: A person can only be a validator once, regardless of how many nodes they own
         // Nodes are just devices controlled by the user's identity
-        // Reduced stake to 1_000 for development so a single welcome bonus (5k) or small pools can start the chain
+        // Development mode: 1,000 SOV minimum stake (configurable in blockchain)
         let genesis_validator = crate::runtime::components::GenesisValidator {
             identity_id: wallet.user_identity.id.clone(), // Use USER identity, not node identity
-            stake: 1_000, // Initial stake for genesis validator (1k ZHTP - accessible for testing)
-            storage_provided: 0,
+            stake: 1_000, // Development mode: 1k SOV meets minimum (blockchain validates based on mode)
+            storage_provided: 0, // Storage requirements enforced separately for production validators
             commission_rate: 500, // 5% commission
 
             node_device_id: Some(wallet.node_identity_id.clone()), // Track which node is running validator

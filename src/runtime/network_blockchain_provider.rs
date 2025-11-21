@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use lib_blockchain::{BlockHeader, Hash};
 use lib_network::blockchain_sync::BlockchainProvider as NetworkBlockchainProvider;
@@ -64,6 +64,20 @@ impl NetworkBlockchainProvider for ZhtpBlockchainProvider {
         
         debug!("Successfully retrieved {} headers", headers.len());
         Ok(headers)
+    }
+
+    async fn get_full_blockchain(&self) -> Result<Vec<u8>> {
+        debug!("Network layer requesting full blockchain");
+        
+        let blockchain = get_global_blockchain().await?;
+        let blockchain_lock = blockchain.read().await;
+        
+        // Serialize the entire blockchain
+        let serialized = bincode::serialize(&*blockchain_lock)
+            .map_err(|e| anyhow!("Failed to serialize blockchain: {}", e))?;
+        
+        debug!("Serialized blockchain: {} bytes", serialized.len());
+        Ok(serialized)
     }
 
     async fn get_chain_proof(&self, up_to_height: u64) -> Result<ChainRecursiveProof> {

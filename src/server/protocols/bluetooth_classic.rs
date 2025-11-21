@@ -148,6 +148,7 @@ impl BluetoothClassicRouter {
                     peer_dilithium_pubkey: None,
                     kyber_shared_secret: None,
                     trust_score: 0.5,
+                    bootstrap_mode: false,
                 };
                 
                 // Add to mesh connections
@@ -270,6 +271,7 @@ impl BluetoothClassicRouter {
                                 peer_dilithium_pubkey: None,
                                 kyber_shared_secret: None,
                                 trust_score: 0.5,
+                                bootstrap_mode: false,
                             };
                             
                             // Add to mesh network

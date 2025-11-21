@@ -192,6 +192,17 @@ impl Component for ProtocolsComponent {
         info!("Starting unified server on port {}...", self.api_port);
         unified_server.start().await?;
         
+        // Connect to bootstrap peers if configured
+        let bootstrap_peers = crate::runtime::bootstrap_peers_provider::get_bootstrap_peers().await;
+        if let Some(peers) = bootstrap_peers {
+            if !peers.is_empty() {
+                info!("Connecting to bootstrap peers via QUIC...");
+                if let Err(e) = unified_server.connect_to_bootstrap_peers(peers).await {
+                    warn!("Failed to connect to some bootstrap peers: {}", e);
+                }
+            }
+        }
+        
         *self.unified_server.write().await = Some(unified_server);
         *self.start_time.write().await = Some(Instant::now());
         *self.status.write().await = ComponentStatus::Running;
