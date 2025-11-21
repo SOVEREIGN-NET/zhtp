@@ -157,7 +157,8 @@ perf.data*
 *.perf
 
 # Core dumps
-core.*
+core
+core.[0-9]*
 
 # Memory dumps
 *.dmp
