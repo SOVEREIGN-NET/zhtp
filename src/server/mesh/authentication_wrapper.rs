@@ -100,7 +100,7 @@ impl MeshRouter {
                 // Establish QUIC connection if available
                 info!("🔐 Establishing QUIC connection to peer {} at {}", handshake.node_id, addr);
                 
-                if let Some(ref quic) = *self.quic_protocol.read().await {
+                if let Some(quic) = self.quic_protocol.read().await.as_ref() {
                     match quic.connect_to_peer(addr).await {
                         Ok(()) => {
                             info!("✅ QUIC connection established (TLS 1.3 + Kyber PQC)");

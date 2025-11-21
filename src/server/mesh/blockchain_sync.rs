@@ -47,7 +47,7 @@ impl MeshRouter {
                         };
                         
                         // Get local node's public key from identity manager
-                        let sender_pubkey = if let Some(ref identity_mgr) = identity_manager {
+                        let sender_pubkey = if let Some(identity_mgr) = identity_manager.as_ref() {
                             let mgr = identity_mgr.read().await;
                             if let Some(identity) = mgr.list_identities().first() {
                                 let mut key_id = [0u8; 32];
@@ -89,7 +89,7 @@ impl MeshRouter {
                         let conns = connections.read().await;
                         let mut success_count = 0;
                         
-                        if let Some(ref quic) = *quic_protocol.read().await {
+                        if let Some(quic) = quic_protocol.read().await.as_ref() {
                             for (_peer_key, connection) in conns.iter() {
                                 match &connection.protocol {
                                     NetworkProtocol::QUIC => {
@@ -128,7 +128,7 @@ impl MeshRouter {
                         };
                         
                         // Get local node's public key from identity manager
-                        let sender_pubkey = if let Some(ref identity_mgr) = identity_manager {
+                        let sender_pubkey = if let Some(identity_mgr) = identity_manager.as_ref() {
                             let mgr = identity_mgr.read().await;
                             if let Some(identity) = mgr.list_identities().first() {
                                 let mut key_id = [0u8; 32];
@@ -269,7 +269,7 @@ impl MeshRouter {
     
     /// Get sender's public key from identity manager (for routing)
     pub async fn get_sender_public_key(&self) -> Result<PublicKey> {
-        if let Some(ref identity_mgr) = self.identity_manager {
+        if let Some(identity_mgr) = self.identity_manager.as_ref() {
             let mgr = identity_mgr.read().await;
             if let Some(identity) = mgr.list_identities().first() {
                 let mut key_id = [0u8; 32];
@@ -309,7 +309,7 @@ impl MeshRouter {
         // Send based on protocol
         match &connection.protocol {
             NetworkProtocol::QUIC => {
-                if let Some(ref quic) = *self.quic_protocol.read().await {
+                if let Some(quic) = self.quic_protocol.read().await.as_ref() {
                     quic.send_to_peer(&connection.peer_id.key_id, message).await
                         .context("Failed to send QUIC message")?;
                     info!("✅ Message sent via QUIC to peer {:?}", &connection.peer_id.key_id[..8]);
@@ -333,7 +333,7 @@ impl MeshRouter {
         let connections = self.connections.read().await;
         let mut success_count = 0;
         
-        if let Some(ref quic) = *self.quic_protocol.read().await {
+        if let Some(quic) = self.quic_protocol.read().await.as_ref() {
             for (_peer_key, connection) in connections.iter() {
                 match &connection.protocol {
                     NetworkProtocol::QUIC => {
