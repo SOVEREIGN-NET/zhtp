@@ -640,10 +640,10 @@ impl WalletStartupManager {
         
         println!("Scanning DHT for wallet advertisements...");
         
-        // Search for wallet records in DHT
-        let wallet_query_key = "zhtp:wallets:available";
+        // Search for wallet records in DHT using Web4 API
+        // Split key "zhtp:wallets:available" into domain "wallet.zhtp" and path "/wallets/available"
         let mut dht = dht_client.write().await;
-        match dht.fetch_content(wallet_query_key).await {
+        match dht.resolve_web4_content("wallet.zhtp", "/wallets/available").await {
             Ok(Some(wallet_data)) => {
                 // Parse discovered wallet records
                 let wallet_records = Self::parse_wallet_records(&wallet_data)?;
@@ -825,7 +825,7 @@ impl WalletStartupManager {
         let dht_client = crate::runtime::shared_dht::get_dht_client().await?;
         let dht = dht_client.read().await;
         
-        match dht.discover_peers().await {
+        match dht.discover_dht_peers().await {
             Ok(peers) => {
                 if peers.is_empty() {
                     println!("No peers discovered for wallet import");
@@ -860,11 +860,12 @@ impl WalletStartupManager {
         // Get shared DHT client for secure communication
         let dht_client = crate::runtime::shared_dht::get_dht_client().await?;
         
-        // Request wallet import from mesh network
-        let import_request_key = format!("zhtp:wallet:import:{}", wallet_name);
+        // Request wallet import from mesh network using Web4 API
+        // Split key into domain "wallet.zhtp" and path "/import/{wallet_name}"
+        let import_path = format!("/import/{}", wallet_name);
         
         let mut dht = dht_client.write().await;
-        match dht.fetch_content(&import_request_key).await {
+        match dht.resolve_web4_content("wallet.zhtp", &import_path).await {
             Ok(Some(wallet_data)) => {
                 // Parse encrypted wallet data and recover
                 let recovered_result = Self::recover_wallet_from_mesh_data(&wallet_data, wallet_name).await?;
@@ -872,7 +873,7 @@ impl WalletStartupManager {
                 Ok(recovered_result)
             },
             Ok(None) => {
-                println!("Wallet data not found in DHT, creating fallback wallet");
+                println!("Wallet data not found in DHT");
                 // Create a new identity with wallet as fallback
                 Self::create_fallback_wallet(wallet_name, balance).await
             },

@@ -11,7 +11,7 @@ use lib_blockchain::{Blockchain, Transaction, Block, BlockHeader, Hash, Difficul
 
 /// Shared blockchain service that manages a single blockchain instance
 /// across all ZHTP components
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SharedBlockchainService {
     blockchain: Arc<RwLock<Blockchain>>,
     operation_tx: UnboundedSender<BlockchainOperation>,

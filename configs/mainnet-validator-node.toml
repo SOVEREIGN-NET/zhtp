@@ -30,7 +30,6 @@ recovery_modes = ["mnemonic", "social", "hardware"]  # All recovery options
 reputation_enabled = true
 
 [storage_config]
-dht_port = 33444  # Mainnet DHT port
 storage_capacity_gb = 500  # Higher storage for mainnet validators
 replication_factor = 3     # Higher replication for production
 erasure_coding = true

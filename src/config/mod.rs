@@ -8,6 +8,7 @@ pub mod environment;
 pub mod mesh_modes;
 pub mod security;
 pub mod network_isolation;
+pub mod storage_defaults;
 
 use anyhow::Result;
 

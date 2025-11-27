@@ -49,11 +49,17 @@ reputation_enabled = true
 # ============================================================================
 
 [storage_config]
-dht_port = 33442
 storage_capacity_gb = 500    # Full nodes provide moderate storage
 replication_factor = 3       # High redundancy for mainnet
 erasure_coding = true        # Data integrity protection
 pricing_tier = "warm"        # Balanced storage tier
+
+    "mainnet-seed1.sovereign.net:9333",
+    "mainnet-seed2.sovereign.net:9333",
+    "mainnet-seed3.sovereign.net:9333",
+    "mainnet-seed4.sovereign.net:9333",
+    "mainnet-seed5.sovereign.net:9333",
+]
 
 # ============================================================================
 # NETWORK CONFIGURATION - MAINNET
@@ -166,7 +172,7 @@ allow_unsafe_operations = false
 rate_limiting = true         # Rate limit API requests
 audit_logging = true         # Full audit trail
 penetration_testing_mode = false  # Disabled in production
-firewall_enabled = true
+# firewall_enabled removed - configure system firewall manually (see deployment-guide.md)
 ddos_protection = true
 intrusion_detection = true
 

@@ -151,14 +151,15 @@ impl Web4Handler {
         ).map_err(|e| anyhow!("Failed to create identity: {}", e))?;
 
         // Initialize global DHT and get client
-        crate::runtime::shared_dht::initialize_global_dht(identity).await
+        let dht_bind_addr = "127.0.0.1:33442".parse().expect("Valid socket address");
+        crate::runtime::shared_dht::initialize_global_dht(identity, dht_bind_addr).await
             .map_err(|e| anyhow!("Failed to initialize DHT: {}", e))?;
         let dht_client = crate::runtime::shared_dht::get_dht_client().await
             .map_err(|e| anyhow!("Failed to get DHT client: {}", e))?;
 
         // Store content in DHT
         let mut dht = dht_client.write().await;
-        let content_hash = dht.store_content(&api_request.domain, &api_request.path, content).await
+        let content_hash = dht.store_web4_content(&api_request.domain, &api_request.path, content).await
             .map(|_| "stored".to_string()) // store_content returns (), so create a hash
             .map_err(|e| anyhow!("Failed to store content in DHT: {}", e))?;
 
@@ -290,14 +291,15 @@ impl Web4Handler {
         ).map_err(|e| anyhow!("Failed to create identity: {}", e))?;
 
         // Initialize global DHT and get client
-        crate::runtime::shared_dht::initialize_global_dht(identity).await
+        let dht_bind_addr = "127.0.0.1:33442".parse().expect("Valid socket address");
+        crate::runtime::shared_dht::initialize_global_dht(identity, dht_bind_addr).await
             .map_err(|e| anyhow!("Failed to initialize DHT: {}", e))?;
         let dht_client = crate::runtime::shared_dht::get_dht_client().await
             .map_err(|e| anyhow!("Failed to get DHT client: {}", e))?;
 
         // Update content in DHT (same as store)
         let mut dht = dht_client.write().await;
-        let content_hash = dht.store_content(domain, &content_path, content).await
+        let content_hash = dht.store_web4_content(domain, &content_path, content).await
             .map(|_| "stored".to_string()) // store_content returns (), so create a hash
             .map_err(|e| anyhow!("Failed to update content in DHT: {}", e))?;
 

@@ -146,32 +146,33 @@ impl RoutingRewardProcessor {
         // Get current routing statistics
         let stats = self.network_component.get_routing_stats().await;
         
+        // Calculate reward from work performed
+        let tokens_earned = stats.calculate_reward();
+        
         info!("   [ROUTING]  Stats:");
-        info!("      [ROUTING] Tokens earned: {} SOV", stats.theoretical_tokens_earned);
+        info!("      [ROUTING] Tokens earned: {} SOV", tokens_earned);
         info!("      [ROUTING] Bytes routed: {} bytes ({:.2} MB)", 
               stats.bytes_routed, 
               stats.bytes_routed as f64 / 1_048_576.0);
         info!("      [ROUTING] Messages routed: {}", stats.messages_routed);
         
         // Check if reward meets minimum threshold
-        if stats.theoretical_tokens_earned < self.config.minimum_threshold {
+        if tokens_earned < self.config.minimum_threshold {
             debug!("     Below threshold ({} < {}), skipping claim", 
-                  stats.theoretical_tokens_earned, 
+                  tokens_earned, 
                   self.config.minimum_threshold);
             return Ok(false);
         }
         
         // Cap reward at max batch size
-        let claim_amount = std::cmp::min(
-            stats.theoretical_tokens_earned, 
-            self.config.max_batch_size
-        );
-        
-        if claim_amount < stats.theoretical_tokens_earned {
+        let claim_amount = if tokens_earned > self.config.max_batch_size {
             warn!("     Capping claim: {} -> {} SOV (excess will be claimed next cycle)", 
-                  stats.theoretical_tokens_earned, 
-                  claim_amount);
-        }
+                  tokens_earned, 
+                  self.config.max_batch_size);
+            self.config.max_batch_size
+        } else {
+            tokens_earned
+        };
         
         info!("    Creating routing reward transaction: {} SOV", claim_amount);
         
@@ -211,7 +212,7 @@ impl RoutingRewardProcessor {
         info!("    Transaction added to pending pool");
         
         // Reset counter (only reset claimed amount if capped)
-        if claim_amount < stats.theoretical_tokens_earned {
+        if claim_amount < tokens_earned {
             // TODO: Partial reset - need to add this to mesh server
             warn!("     Partial reset not yet implemented - resetting all");
         }
@@ -308,9 +309,10 @@ impl RoutingRewardProcessor {
     /// Returns current statistics about pending rewards and processor state.
     pub async fn get_metrics(&self) -> RoutingRewardMetrics {
         let stats = self.network_component.get_routing_stats().await;
+        let tokens_earned = stats.calculate_reward();
         
         RoutingRewardMetrics {
-            pending_rewards: stats.theoretical_tokens_earned,
+            pending_rewards: tokens_earned,
             total_bytes_routed: stats.bytes_routed,
             total_messages_routed: stats.messages_routed,
             check_interval_secs: self.config.check_interval.as_secs(),

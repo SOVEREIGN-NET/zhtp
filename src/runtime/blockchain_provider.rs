@@ -7,7 +7,7 @@ use tracing::{info, error};
 /// Global blockchain provider for shared access across components
 /// This allows the protocols component to access the shared blockchain instance
 /// without directly coupling to the orchestrator
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BlockchainProvider {
     blockchain: Arc<RwLock<Option<Arc<RwLock<Blockchain>>>>>,
 }

@@ -30,7 +30,6 @@ recovery_modes = ["mnemonic"]
 reputation_enabled = false  # Simplified for development
 
 [storage_config]
-dht_port = 33442
 storage_capacity_gb = 10  # Minimal storage for development
 replication_factor = 1
 erasure_coding = false

@@ -127,12 +127,36 @@ impl Component for ProtocolsComponent {
         
         // Initialize economic model and storage
         let economic_model = Arc::new(RwLock::new(lib_economy::EconomicModel::new()));
-        let storage_config = create_default_storage_config()?;
+        
+        // Get owner key for QUIC DHT transport
+        let owner_key = {
+            let mgr = identity_manager.read().await;
+            if let Some(identity) = mgr.list_identities().first() {
+                lib_crypto::PublicKey::new(identity.public_key.clone())
+            } else {
+                lib_crypto::generate_keypair()?.public_key
+            }
+        };
+        
+        // Create storage config WITH QUIC transport if QUIC is initialized
+        let storage_config = if lib_network::protocols::quic_mesh::QuicMeshProtocol::has_global_instance() {
+            info!("✅ Using QUIC transport for storage DHT");
+            crate::config::storage_defaults::create_storage_config_with_quic(
+                lib_crypto::Hash([1u8; 32]),
+                vec![format!("127.0.0.1:{}", self.api_port)],
+                owner_key.clone(),
+            )?
+        } else {
+            info!("⚠️ QUIC not initialized, using default storage config (mock transport)");
+            create_default_storage_config()?
+        };
+        
         let storage = Arc::new(RwLock::new(lib_storage::UnifiedStorageSystem::new(storage_config).await?));
         
         info!("Creating ZHTP Unified Server...");
         let (peer_discovery_tx, _peer_discovery_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         
+        // TODO: Pass runtime orchestrator reference for NetworkHandler once we have component-to-orchestrator communication
         let mut unified_server = crate::unified_server::ZhtpUnifiedServer::new_with_peer_notification(
             blockchain.clone(),
             storage.clone(),
@@ -140,6 +164,7 @@ impl Component for ProtocolsComponent {
             economic_model.clone(),
             self.api_port,
             Some(peer_discovery_tx),
+            None, // runtime parameter - NetworkHandler will be skipped until we add orchestrator reference
         ).await?;
         
         // Initialize blockchain provider
@@ -177,8 +202,9 @@ impl Component for ProtocolsComponent {
         let bootstrap_peers = crate::runtime::bootstrap_peers_provider::get_bootstrap_peers().await;
         if let Some(peers) = bootstrap_peers {
             if !peers.is_empty() {
-                info!("Connecting to bootstrap peers via QUIC...");
-                if let Err(e) = unified_server.connect_to_bootstrap_peers(peers).await {
+                let mode = if self.is_edge_node { "edge mode - headers+proofs" } else { "full mode - complete blockchain" };
+                info!("Connecting to bootstrap peers via QUIC ({})...", mode);
+                if let Err(e) = unified_server.connect_to_bootstrap_peers(peers, self.is_edge_node).await {
                     warn!("Failed to connect to some bootstrap peers: {}", e);
                 }
             }

@@ -49,11 +49,15 @@ reputation_enabled = true
 # ============================================================================
 
 [storage_config]
-dht_port = 33443            # Testnet DHT port (different from mainnet)
 storage_capacity_gb = 100   # Lower capacity for testing
 replication_factor = 2      # Lower redundancy for testnet
 erasure_coding = true       # Test erasure coding
 pricing_tier = "cold"       # Low-cost storage for testing
+
+    "testnet-seed1.sovereign.net:9333",
+    "testnet-seed2.sovereign.net:9333",
+    "testnet-seed3.sovereign.net:9333",
+]
 
 # ============================================================================
 # NETWORK CONFIGURATION - TESTNET
@@ -168,7 +172,7 @@ allow_unsafe_operations = true  # Allow testing of edge cases
 rate_limiting = false        # No rate limiting for testing
 audit_logging = true         # Full audit trail
 penetration_testing_mode = true  # Enable testing mode
-firewall_enabled = false     # More permissive for testing
+# firewall_enabled removed - configure system firewall manually (see deployment-guide.md)
 ddos_protection = false      # Disabled for easier testing
 intrusion_detection = true
 

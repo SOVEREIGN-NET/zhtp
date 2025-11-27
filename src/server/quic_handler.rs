@@ -34,14 +34,14 @@ pub struct QuicHandler {
     http_compat: Arc<HttpCompatibilityLayer>,
     
     /// QUIC mesh protocol
-    quic_protocol: Arc<QuicMeshProtocol>,
+    quic_protocol: Arc<RwLock<QuicMeshProtocol>>,
 }
 
 impl QuicHandler {
     /// Create new QUIC handler
     pub fn new(
         zhtp_router: Arc<RwLock<ZhtpRouter>>,
-        quic_protocol: Arc<QuicMeshProtocol>,
+        quic_protocol: Arc<RwLock<QuicMeshProtocol>>,
     ) -> Self {
         // HTTP compatibility layer will clone router when needed
         let http_compat = Arc::new(HttpCompatibilityLayer::new(

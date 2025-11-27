@@ -15,7 +15,6 @@ use lib_consensus::ValidatorManager;
 use lib_identity::IdentityId;
 
 /// Blockchain component - manages blockchain lifecycle and delegates business logic to services
-#[derive(Debug)]
 pub struct BlockchainComponent {
     status: Arc<RwLock<ComponentStatus>>,
     start_time: Arc<RwLock<Option<Instant>>>,
@@ -29,6 +28,18 @@ pub struct BlockchainComponent {
     validator_manager: Arc<RwLock<Option<Arc<RwLock<ValidatorManager>>>>>,
     node_identity: Arc<RwLock<Option<IdentityId>>>,
     is_edge_node: bool,
+}
+
+impl std::fmt::Debug for BlockchainComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockchainComponent")
+            .field("status", &"<ComponentStatus>")
+            .field("blockchain", &"<Blockchain>")
+            .field("environment", &self.environment)
+            .field("joined_existing_network", &self.joined_existing_network)
+            .field("is_edge_node", &self.is_edge_node)
+            .finish()
+    }
 }
 
 impl BlockchainComponent {

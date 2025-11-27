@@ -381,7 +381,7 @@ impl InteractiveShell {
                 println!("   Network I/O: {:.1} MB sent, {:.1} MB received", 
                     stats.bytes_sent as f64 / 1_000_000.0, 
                     stats.bytes_received as f64 / 1_000_000.0);
-                println!("   Connections: {}", stats.connection_count);
+                println!("   Connections: {}", stats.active_connections);
             }
             Err(_) => {
                 println!("   Network I/O: Status unavailable");
@@ -498,7 +498,7 @@ impl InteractiveShell {
                 println!("     • Bytes Received: {:.1} MB", stats.bytes_received as f64 / 1_000_000.0);
                 println!("     • Packets Sent: {}", stats.packets_sent);
                 println!("     • Packets Received: {}", stats.packets_received);
-                println!("     • Active Connections: {}", stats.connection_count);
+                println!("     • Active Connections: {}", stats.active_connections);
             }
             Err(e) => {
                 println!("   Network statistics unavailable: {}", e);

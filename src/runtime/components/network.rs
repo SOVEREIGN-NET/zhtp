@@ -8,23 +8,17 @@ use tracing::{info, warn, debug};
 use crate::runtime::{Component, ComponentId, ComponentStatus, ComponentHealth, ComponentMessage};
 use lib_network::ZhtpMeshServer;
 
-/// Statistics for routing reward processing
-#[derive(Debug, Clone, Default)]
-pub struct RoutingRewardStats {
-    pub theoretical_tokens_earned: u64,
-    pub bytes_routed: u64,
-    pub messages_routed: u64,
-}
-
-/// Storage reward statistics for reward calculation
-#[derive(Debug, Clone, Default)]
-pub struct StorageRewardStats {
-    pub theoretical_tokens_earned: u64,
-    pub items_stored: u64,
-    pub bytes_stored: u64,
-    pub retrievals_served: u64,
-    pub storage_duration_hours: u64,
-}
+// ARCHITECTURAL NOTE: Statistics types are centralized in lib-economy
+// - lib-economy defines: RoutingWork, StorageWork, RelayWork, ComputationWork
+// - lib-network re-exports them as: RoutingWorkMetrics, StorageWorkMetrics
+// - zhtp uses them through lib-network for reward calculations
+// This eliminates ~300-400 lines of duplicated code across 4 files
+pub use lib_network::types::{
+    RoutingWorkMetrics as RoutingRewardStats,
+    StorageWorkMetrics as StorageRewardStats,
+    NetworkStatistics,
+    PerformanceMetrics,
+};
 
 /// Network component implementation using lib-network package
 #[derive(Clone)]
@@ -55,10 +49,18 @@ impl NetworkComponent {
     
     pub async fn get_routing_stats(&self) -> RoutingRewardStats {
         if let Some(ref server) = *self.mesh_server.read().await {
+            let bytes_routed = server.get_total_bytes_routed().await;
+            let messages_routed = server.get_total_messages_routed().await;
+            let quality_metrics = server.quality_metrics.read().await;
+            
             RoutingRewardStats {
-                theoretical_tokens_earned: server.get_theoretical_tokens_earned().await,
-                bytes_routed: server.get_total_bytes_routed().await,
-                messages_routed: server.get_total_messages_routed().await,
+                packets_routed: messages_routed,
+                bytes_routed,
+                messages_routed,
+                average_latency_ms: quality_metrics.average_latency(),
+                uptime_seconds: quality_metrics.start_time.elapsed().as_secs(),
+                hops_facilitated: 0,
+                quality_score: quality_metrics.success_rate() / 100.0,
             }
         } else {
             debug!("Mesh statistics not yet available (unified_server starting), returning defaults");
@@ -92,12 +94,24 @@ impl NetworkComponent {
     pub async fn get_storage_stats(&self) -> StorageRewardStats {
         if let Some(ref server) = *self.mesh_server.read().await {
             let stats = server.get_storage_stats_snapshot().await;
+            let total_ops = stats.successful_storage_ops + stats.failed_storage_ops;
+            
             StorageRewardStats {
-                theoretical_tokens_earned: stats.theoretical_tokens_earned,
                 items_stored: stats.items_stored,
                 bytes_stored: stats.bytes_stored,
                 retrievals_served: stats.retrievals_served,
                 storage_duration_hours: stats.storage_duration_hours,
+                retrieval_speed_bps: if stats.storage_duration_hours > 0 && stats.retrievals_served > 0 {
+                    let duration_seconds = stats.storage_duration_hours * 3600;
+                    (stats.bytes_stored as f64 * stats.retrievals_served as f64) / duration_seconds as f64
+                } else {
+                    0.0
+                },
+                reliability_score: if total_ops == 0 {
+                    1.0
+                } else {
+                    stats.successful_storage_ops as f64 / total_ops as f64
+                },
             }
         } else {
             debug!("Mesh statistics not yet available (unified_server starting), returning defaults");
@@ -198,7 +212,7 @@ impl Component for NetworkComponent {
                     info!("Starting peer discovery...");
                     let stats = server.get_network_stats().await;
                     info!("Network stats - Active connections: {}, Coverage: {:.2} km²", 
-                          stats.active_connections, stats.coverage_area_km2);
+                          stats.network_stats.active_connections, stats.coverage_area_km2);
                 } else {
                     warn!("Cannot discover peers: mesh server not initialized");
                 }
@@ -225,10 +239,10 @@ impl Component for NetworkComponent {
         
         if let Some(ref server) = *self.mesh_server.read().await {
             let stats = server.get_network_stats().await;
-            metrics.insert("active_connections".to_string(), stats.active_connections as f64);
-            metrics.insert("total_data_routed".to_string(), stats.total_data_routed as f64);
+            metrics.insert("active_connections".to_string(), stats.network_stats.active_connections as f64);
+            metrics.insert("total_data_routed".to_string(), stats.network_stats.total_data_routed as f64);
             metrics.insert("long_range_relays".to_string(), stats.long_range_relays as f64);
-            metrics.insert("average_latency_ms".to_string(), stats.average_latency_ms as f64);
+            metrics.insert("average_latency_ms".to_string(), stats.network_stats.average_latency_ms as f64);
             metrics.insert("coverage_area_km2".to_string(), stats.coverage_area_km2);
             metrics.insert("people_with_free_internet".to_string(), stats.people_with_free_internet as f64);
         } else {

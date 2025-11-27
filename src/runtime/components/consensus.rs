@@ -47,7 +47,6 @@ impl lib_consensus::validators::ValidatorInfo for BlockchainValidatorAdapter {
 }
 
 /// Consensus component implementation using lib-consensus package
-#[derive(Debug)]
 pub struct ConsensusComponent {
     status: Arc<RwLock<ComponentStatus>>,
     start_time: Arc<RwLock<Option<Instant>>>,
@@ -55,6 +54,17 @@ pub struct ConsensusComponent {
     validator_manager: Arc<RwLock<ValidatorManager>>,
     blockchain: Arc<RwLock<Option<Arc<RwLock<Blockchain>>>>>,
     environment: crate::config::Environment,
+}
+
+impl std::fmt::Debug for ConsensusComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsensusComponent")
+            .field("status", &"<ComponentStatus>")
+            .field("consensus_engine", &"<ConsensusEngine>")
+            .field("blockchain", &"<Blockchain>")
+            .field("environment", &self.environment)
+            .finish()
+    }
 }
 
 impl ConsensusComponent {

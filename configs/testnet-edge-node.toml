@@ -30,7 +30,6 @@ recovery_modes = ["mnemonic"]  # Simple recovery only
 reputation_enabled = true
 
 [storage_config]
-dht_port = 33443  # Testnet DHT port
 storage_capacity_gb = 10  # Minimal storage
 replication_factor = 1    # No replication on edge
 erasure_coding = false    # Too resource-intensive
@@ -110,7 +109,7 @@ allow_unsafe_operations = true
 rate_limiting = false
 audit_logging = false  # Too resource-intensive
 penetration_testing_mode = true
-firewall_enabled = false
+# firewall_enabled removed - configure system firewall manually (see deployment-guide.md)
 ddos_protection = false
 intrusion_detection = false
 

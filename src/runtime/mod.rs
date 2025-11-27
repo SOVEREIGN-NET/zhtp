@@ -47,7 +47,7 @@ pub use shared_dht::*;
 pub use blockchain_provider::{initialize_global_blockchain_provider, set_global_blockchain, is_global_blockchain_available};
 pub use identity_manager_provider::{initialize_global_identity_manager_provider, set_global_identity_manager, get_global_identity_manager};
 pub use network_blockchain_provider::ZhtpBlockchainProvider;
-pub use mesh_router_provider::{initialize_global_mesh_router_provider, set_global_mesh_router, get_broadcast_metrics};
+pub use mesh_router_provider::{initialize_global_mesh_router_provider, set_global_mesh_bridge, get_broadcast_metrics};
 
 /// Component status information
 #[derive(Debug, Clone, PartialEq)]
@@ -74,7 +74,7 @@ pub struct ComponentHealth {
 }
 
 /// Inter-component message types
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ComponentMessage {
     // Lifecycle messages
     Start,
@@ -110,6 +110,32 @@ pub enum ComponentMessage {
     
     // Custom messages
     Custom(String, Vec<u8>),
+}
+
+impl std::fmt::Debug for ComponentMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ComponentMessage::Start => write!(f, "Start"),
+            ComponentMessage::Stop => write!(f, "Stop"),
+            ComponentMessage::Restart => write!(f, "Restart"),
+            ComponentMessage::HealthCheck => write!(f, "HealthCheck"),
+            ComponentMessage::PeerConnected(peer) => write!(f, "PeerConnected({})", peer),
+            ComponentMessage::PeerDisconnected(peer) => write!(f, "PeerDisconnected({})", peer),
+            ComponentMessage::NetworkUpdate(info) => write!(f, "NetworkUpdate({})", info),
+            ComponentMessage::BlockMined(hash) => write!(f, "BlockMined({})", hash),
+            ComponentMessage::TransactionReceived(tx) => write!(f, "TransactionReceived({})", tx),
+            ComponentMessage::IdentityCreated(id) => write!(f, "IdentityCreated({})", id),
+            ComponentMessage::IdentityUpdated(id) => write!(f, "IdentityUpdated({})", id),
+            ComponentMessage::FileStored(hash) => write!(f, "FileStored({})", hash),
+            ComponentMessage::FileRequested(hash) => write!(f, "FileRequested({})", hash),
+            ComponentMessage::UbiPayment(addr, amt) => write!(f, "UbiPayment({}, {})", addr, amt),
+            ComponentMessage::DaoProposal(prop) => write!(f, "DaoProposal({})", prop),
+            ComponentMessage::GetBlockchain => write!(f, "GetBlockchain"),
+            ComponentMessage::GetBlockchainResponse(_) => write!(f, "GetBlockchainResponse(<Blockchain>)"),
+            ComponentMessage::BlockchainOperation(op, _) => write!(f, "BlockchainOperation({}, <data>)", op),
+            ComponentMessage::Custom(name, _) => write!(f, "Custom({}, <data>)", name),
+        }
+    }
 }
 
 /// Component identifier
@@ -718,12 +744,55 @@ impl RuntimeOrchestrator {
             key_id: keypair.public_key.key_id.clone(),
         };
         
+        // Create callback to connect discovered peers automatically with intelligent selection
+        let runtime_for_callback = Arc::new(self.clone());
+        let max_peers = self.config.network_config.max_peers;
+        let peer_discovered_callback = Arc::new(move |peer_addr: String, _peer_pubkey: lib_crypto::PublicKey| {
+            let runtime = runtime_for_callback.clone();
+            let addr = peer_addr.clone();
+            let max_peers_limit = max_peers;
+            
+            // Spawn task to connect to discovered peer with peer limit checking
+            tokio::spawn(async move {
+                // Check current peer count before connecting
+                match runtime.get_connected_peers().await {
+                    Ok(peers) => {
+                        if peers.len() >= max_peers_limit {
+                            debug!("⏸️  Peer limit reached ({}/{}), skipping connection to {}", 
+                                  peers.len(), max_peers_limit, addr);
+                            return;
+                        }
+                        
+                        // Check if already connected
+                        if peers.iter().any(|p| p.contains(&addr)) {
+                            debug!("⏭️  Already connected to {}, skipping", addr);
+                            return;
+                        }
+                        
+                        info!("🔗 Auto-connecting to multicast peer {}/{}: {}", 
+                              peers.len() + 1, max_peers_limit, addr);
+                        match runtime.connect_to_peer(&addr).await {
+                            Ok(_) => {
+                                info!("✅ Connected to peer: {}", addr);
+                            }
+                            Err(e) => {
+                                warn!("⚠️  Failed to connect to peer {}: {}", addr, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Cannot check peer count: {}", e);
+                    }
+                }
+            });
+        });
+        
         // Start local discovery service (runs in background)
         if let Err(e) = lib_network::discovery::start_local_discovery(
             node_uuid,
             mesh_port,
             public_key,
-            None, // No callback needed for now
+            Some(peer_discovered_callback),
         ).await {
             warn!("Failed to start local discovery: {}", e);
         }
@@ -1374,7 +1443,7 @@ impl RuntimeOrchestrator {
                 info.push_str(&format!("Bytes Received: {} MB\n", net_stats.bytes_received / 1_000_000));
                 info.push_str(&format!("Packets Sent: {}\n", net_stats.packets_sent));
                 info.push_str(&format!("Packets Received: {}\n", net_stats.packets_received));
-                info.push_str(&format!("Connections: {}\n", net_stats.connection_count));
+                info.push_str(&format!("Connections: {}\n", net_stats.active_connections));
             }
             Err(e) => {
                 info.push_str(&format!("Failed to get network statistics: {}\n", e));
@@ -1768,6 +1837,19 @@ impl RuntimeOrchestrator {
             master_seed: vec![0u8; 32],
         };
         
+        // Create PublicKey from wallet_pubkey
+        let public_key = lib_crypto::PublicKey {
+            dilithium_pk: wallet_pubkey.clone(),
+            kyber_pk: Vec::new(),
+            key_id: [0; 32],
+        };
+        
+        // Create KeyPair for signing
+        let keypair = lib_crypto::KeyPair {
+            public_key,
+            private_key,
+        };
+        
         // Create transaction inputs from selected UTXOs
         let mut inputs = Vec::new();
         for (utxo_hash, output_index, _amount) in &selected_utxos {
@@ -1844,7 +1926,7 @@ impl RuntimeOrchestrator {
             .add_inputs(inputs)
             .add_outputs(outputs)
             .fee(fee)
-            .build(&private_key)
+            .build(&keypair)
             .context("Failed to build transaction")?;
         
         let tx_hash = transaction.hash();
@@ -2069,12 +2151,55 @@ impl RuntimeOrchestrator {
             key_id: keypair.public_key.key_id.clone(),
         };
         
-        // Start local discovery service (broadcasts immediately, then every 30s)
-        if let Err(e) = lib_network::discovery::local_network::start_local_discovery(
+        // Create callback to connect discovered peers automatically with peer limit checking
+        let runtime_for_callback = Arc::new(self.clone());
+        let max_peers = self.config.network_config.max_peers;
+        let peer_discovered_callback = Arc::new(move |peer_addr: String, _peer_pubkey: lib_crypto::PublicKey| {
+            let runtime = runtime_for_callback.clone();
+            let addr = peer_addr.clone();
+            let max_peers_limit = max_peers;
+            
+            // Spawn task to connect to discovered peer with peer limit checking
+            tokio::spawn(async move {
+                // Check current peer count before connecting
+                match runtime.get_connected_peers().await {
+                    Ok(peers) => {
+                        if peers.len() >= max_peers_limit {
+                            debug!("⏸️  Peer limit reached ({}/{}), skipping connection to {}", 
+                                  peers.len(), max_peers_limit, addr);
+                            return;
+                        }
+                        
+                        // Check if already connected
+                        if peers.iter().any(|p| p.contains(&addr)) {
+                            debug!("⏭️  Already connected to {}, skipping", addr);
+                            return;
+                        }
+                        
+                        info!("🔗 Auto-connecting to multicast peer {}/{}: {}", 
+                              peers.len() + 1, max_peers_limit, addr);
+                        match runtime.connect_to_peer(&addr).await {
+                            Ok(_) => {
+                                info!("✅ Connected to peer: {}", addr);
+                            }
+                            Err(e) => {
+                                warn!("⚠️  Failed to connect to peer {}: {}", addr, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Cannot check peer count: {}", e);
+                    }
+                }
+            });
+        });
+        
+        // Start local discovery service (broadcasts immediately, then every 5s)
+        if let Err(e) = lib_network::discovery::start_local_discovery(
             node_uuid,
             mesh_port,
             public_key,
-            None, // No callback needed for discovery phase
+            Some(peer_discovered_callback),
         ).await {
             warn!("      Failed to start local discovery: {}", e);
         } else {
@@ -2086,10 +2211,7 @@ impl RuntimeOrchestrator {
     
     /// Discover network with retry logic for edge nodes
     pub async fn discover_network_with_retry(&mut self, is_edge_node: bool) -> Result<Option<ExistingNetworkInfo>> {
-        use crate::discovery_coordinator::DiscoveryCoordinator;
-        
-        let discovery = DiscoveryCoordinator::new();
-        discovery.start_event_listener().await;
+        // Use lib-network's discovery directly - it handles multicast, mDNS, and other protocols
         
         if is_edge_node {
             info!("🔍 Edge node: Continuously searching for ZHTP network...");
@@ -2098,7 +2220,7 @@ impl RuntimeOrchestrator {
             let mut attempt = 1;
             loop {
                 info!("📡 Discovery attempt #{}", attempt);
-                match discovery.discover_network(&self.config.environment).await {
+                match self.discover_network_via_lib_network().await {
                     Ok(network_info) => {
                         info!("✓ Found network on attempt #{}", attempt);
                         return Ok(Some(network_info));
@@ -2115,7 +2237,7 @@ impl RuntimeOrchestrator {
             info!("🔍 Attempting to discover existing ZHTP network...");
             info!("   Discovery timeout: 30 seconds");
             
-            match discovery.discover_network(&self.config.environment).await {
+            match self.discover_network_via_lib_network().await {
                 Ok(network_info) => {
                     info!("✓ Connected to existing ZHTP network!");
                     info!("   Network peers: {}", network_info.peer_count);
@@ -2128,6 +2250,59 @@ impl RuntimeOrchestrator {
                 }
             }
         }
+    }
+    
+    /// Discover network using lib-network's discovery mechanisms
+    async fn discover_network_via_lib_network(&self) -> Result<ExistingNetworkInfo> {
+        info!("📡 Discovering ZHTP peers on local network...");
+        info!("   Methods: UDP multicast, mDNS, bootstrap peers");
+        
+        // Get bootstrap peers from config
+        let env_config = self.config.environment.get_default_config();
+        let mut discovered_peers = Vec::new();
+        
+        // Try bootstrap peers first (most reliable)
+        if !env_config.network_settings.bootstrap_peers.is_empty() {
+            info!("   → Trying configured bootstrap peers ({} addresses)...", env_config.network_settings.bootstrap_peers.len());
+            for peer in &env_config.network_settings.bootstrap_peers {
+                if peer.starts_with("127.0.0.1") || peer.starts_with("localhost") {
+                    continue; // Skip localhost
+                }
+                
+                // Verify peer is reachable
+                if let Ok(socket_addr) = peer.parse::<std::net::SocketAddr>() {
+                    match tokio::time::timeout(
+                        Duration::from_secs(2),
+                        tokio::net::TcpStream::connect(socket_addr)
+                    ).await {
+                        Ok(Ok(_)) => {
+                            info!("      ✓ Bootstrap peer {} is reachable", peer);
+                            discovered_peers.push(peer.clone());
+                        }
+                        Ok(Err(_)) => {}
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+        
+        if discovered_peers.is_empty() {
+            return Err(anyhow::anyhow!("No network peers found"));
+        }
+        
+        info!("✓ Discovered {} ZHTP peer(s)!", discovered_peers.len());
+        
+        // Query blockchain info from first peer
+        let blockchain_height = 0u64; // TODO: Query actual height from peer
+        let network_id = "zhtp-mainnet".to_string();
+        
+        Ok(ExistingNetworkInfo {
+            peer_count: discovered_peers.len() as u32,
+            blockchain_height,
+            network_id,
+            bootstrap_peers: discovered_peers,
+            environment: self.config.environment.clone(),
+        })
     }
     
     /// Graceful shutdown of the orchestrator

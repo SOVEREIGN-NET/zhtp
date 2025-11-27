@@ -8,6 +8,7 @@
 //! - `protocol_detection` - TCP/UDP protocol detection (100 lines)
 //! - `tcp_handler` - TCP connection handling and routing (220 lines)
 //! - `udp_handler` - UDP packet handling and mesh connections (270 lines)
+//! - `udp_zhtp_handler` - UDP ZHTP listener for testing/simple clients (100 lines)
 //! - `api_registration` - HTTP API handler registration (180 lines)
 //! 
 //! ### HTTP Layer (Phase 2)
@@ -42,6 +43,8 @@ pub mod api_registration;
 
 // NEW: QUIC-native handler (replaces TCP/UDP)
 pub mod quic_handler;
+pub mod udp_zhtp_handler;  // Simple UDP transport for ZHTP (testing/simple clients)
+pub mod websocket_zhtp_bridge;  // WebSocket transport for ZHTP (browser clients)
 pub mod zhtp;  // Native ZHTP protocol over QUIC
 
 // Layer modules (Phases 2-5)
@@ -55,6 +58,8 @@ pub use protocol_detection::IncomingProtocol;
 // ❌ DELETED: TcpHandler - Use QuicHandler instead
 // ❌ DELETED: UdpHandler - Use QuicHandler instead
 pub use quic_handler::QuicHandler;  // QUIC-native handler
+pub use udp_zhtp_handler::UdpZhtpHandler;  // UDP ZHTP for testing/simple clients
+pub use websocket_zhtp_bridge::WebSocketZhtpBridge;  // WebSocket ZHTP for browser clients
 pub use api_registration::register_api_handlers;
 
 pub use http::router::HttpRouter;
@@ -64,7 +69,9 @@ pub use monitoring::reputation::{PeerReputation, PeerRateLimit, PeerPerformanceS
 pub use monitoring::metrics::{SyncPerformanceMetrics, BroadcastMetrics, MetricsSnapshot, MetricsHistory};
 pub use monitoring::alerts::{AlertLevel, SyncAlert, AlertThresholds};
 
-pub use mesh::core::MeshRouter;
+// MeshBridge - Application layer adapter for lib-network's ZhtpMeshServer
+pub mod mesh_bridge;
+pub use mesh_bridge::MeshBridge;
 
 pub use protocols::{WiFiRouter, BluetoothRouter, BluetoothClassicRouter, ClassicProtocol};
 // ❌ REMOVED: BootstrapRouter - Use lib-network::bootstrap instead

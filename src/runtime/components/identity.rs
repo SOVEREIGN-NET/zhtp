@@ -202,24 +202,5 @@ impl Component for IdentityComponent {
     }
 }
 
-/// Helper function to create default storage configuration
-pub fn create_default_storage_config() -> Result<lib_storage::UnifiedStorageConfig> {
-    use lib_storage::{UnifiedStorageConfig, StorageConfig, ErasureConfig, StorageTier};
-    use lib_crypto::Hash;
-    
-    Ok(UnifiedStorageConfig {
-        node_id: Hash([1u8; 32]),
-        addresses: vec![],
-        economic_config: Default::default(),
-        storage_config: StorageConfig {
-            max_storage_size: 1024 * 1024 * 1024,
-            default_tier: StorageTier::Hot,
-            enable_compression: true,
-            enable_encryption: true,
-        },
-        erasure_config: ErasureConfig {
-            data_shards: 4,
-            parity_shards: 2,
-        },
-    })
-}
+// Re-export from centralized location
+pub use crate::config::storage_defaults::create_default_storage_config;

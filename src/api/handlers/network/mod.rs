@@ -14,6 +14,17 @@ use lib_protocols::types::{ZhtpRequest, ZhtpResponse, ZhtpStatus, ZhtpMethod};
 
 use crate::runtime::RuntimeOrchestrator;
 
+// Import unified statistics from lib-network
+pub use lib_network::types::{
+    NetworkStatistics,
+    PerformanceMetrics,
+    BandwidthStatistics,
+    LatencyStatistics,
+    ProtocolStats,
+    RoutingWorkMetrics,
+    StorageWorkMetrics,
+};
+
 // Request/Response structures for network operations
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,7 +65,7 @@ pub struct TrafficStats {
     pub bytes_received: u64,
     pub packets_sent: u64,
     pub packets_received: u64,
-    pub connection_count: usize,
+    pub active_connections: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,9 +116,15 @@ pub struct SyncMetricsResponse {
 
 // Phase 4: Advanced monitoring response structures
 
+/// Extended performance metrics response that includes blockchain-specific metrics
+/// along with the unified PerformanceMetrics from lib-network
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PerformanceMetricsResponse {
     pub status: String,
+    /// Core network performance metrics (from unified NetworkStatistics)
+    #[serde(flatten)]
+    pub network_metrics: PerformanceMetrics,
+    /// Blockchain-specific metrics
     pub avg_block_propagation_ms: f64,
     pub avg_tx_propagation_ms: f64,
     pub p95_block_latency_ms: u64,
@@ -414,14 +431,7 @@ impl NetworkHandler {
             Ok(stats) => stats,
             Err(e) => {
                 warn!("API: Failed to get network statistics: {}", e);
-                lib_network::types::NetworkStatistics {
-                    bytes_sent: 0,
-                    bytes_received: 0,
-                    packets_sent: 0,
-                    packets_received: 0,
-                    peer_count: 0,
-                    connection_count: 0,
-                }
+                lib_network::types::NetworkStatistics::default()
             }
         };
 
@@ -439,7 +449,7 @@ impl NetworkHandler {
                 bytes_received: network_stats.bytes_received,
                 packets_sent: network_stats.packets_sent,
                 packets_received: network_stats.packets_received,
-                connection_count: network_stats.connection_count,
+                active_connections: network_stats.active_connections,
             },
             peer_distribution: PeerDistribution {
                 active_peers: mesh_status.active_peers,
@@ -700,10 +710,20 @@ impl NetworkHandler {
     async fn handle_get_performance_metrics(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Getting sync performance metrics");
         
+        // TODO: Re-enable when monitoring is integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Performance metrics not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::get_performance_metrics().await {
             Ok(metrics) => {
                 let response = PerformanceMetricsResponse {
                     status: "success".to_string(),
+                    network_metrics: PerformanceMetrics {
+                        latency_ms: metrics.avg_block_propagation_ms.max(metrics.avg_tx_propagation_ms),
+                        bandwidth_mbps: metrics.bytes_sent_per_sec / 1_000_000.0,
+                        uptime_seconds: metrics.measurement_duration_secs,
+                        packet_loss_percent: 100.0 - metrics.validation_success_rate,
+                    },
                     avg_block_propagation_ms: metrics.avg_block_propagation_ms,
                     avg_tx_propagation_ms: metrics.avg_tx_propagation_ms,
                     p95_block_latency_ms: metrics.p95_block_latency_ms,
@@ -742,6 +762,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Get active alerts
@@ -749,6 +770,10 @@ impl NetworkHandler {
     async fn handle_get_alerts(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Getting active alerts");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Alert monitoring not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::get_active_alerts().await {
             Ok(alerts) => {
                 let unacknowledged_count = alerts.iter().filter(|a| !a.acknowledged).count();
@@ -799,6 +824,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Acknowledge an alert
@@ -806,6 +832,10 @@ impl NetworkHandler {
     async fn handle_acknowledge_alert(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Acknowledging alert");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Alert acknowledgment not yet available".to_string()));
+        
+        /*
         // Parse request body
         let ack_request: AcknowledgeAlertRequest = if request.body.is_empty() {
             return Ok(ZhtpResponse::error(
@@ -848,6 +878,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Clear acknowledged alerts
@@ -855,8 +886,12 @@ impl NetworkHandler {
     async fn handle_clear_acknowledged_alerts(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Clearing acknowledged alerts");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Alert clearing not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::clear_acknowledged_alerts().await {
-            Ok(()) => {
+            Ok(cleared_count) => {
                 let response = serde_json::json!({
                     "status": "success",
                     "message": "Acknowledged alerts cleared"
@@ -881,6 +916,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Get alert thresholds configuration
@@ -888,6 +924,10 @@ impl NetworkHandler {
     async fn handle_get_alert_thresholds(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Getting alert thresholds");
         
+        // TODO: Re-enable when monitoring is integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Alert thresholds not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::get_alert_thresholds().await {
             Ok(thresholds) => {
                 let response = AlertThresholdsResponse {
@@ -919,6 +959,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Update alert thresholds configuration
@@ -926,6 +967,10 @@ impl NetworkHandler {
     async fn handle_update_alert_thresholds(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Updating alert thresholds");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Alert threshold updates not yet available".to_string()));
+        
+        /*
         // Parse request body
         let update_request: UpdateThresholdsRequest = if request.body.is_empty() {
             return Ok(ZhtpResponse::error(
@@ -1001,6 +1046,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Get metrics history
@@ -1008,6 +1054,10 @@ impl NetworkHandler {
     async fn handle_get_metrics_history(&self, request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Getting metrics history");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Metrics history not yet available".to_string()));
+        
+        /*
         // Parse query parameter for last_n
         let last_n = request.uri
             .split('?')
@@ -1019,7 +1069,7 @@ impl NetworkHandler {
                     .and_then(|val| val.parse::<usize>().ok())
             });
         
-        match crate::runtime::mesh_router_provider::get_metrics_history(last_n).await {
+        match crate::runtime::mesh_router_provider::get_metrics_history(last_n.unwrap_or(100)).await {
             Ok(snapshots) => {
                 let history_snapshots: Vec<HistorySnapshot> = snapshots.iter().map(|s| {
                     HistorySnapshot {
@@ -1060,6 +1110,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Get all peer performance statistics
@@ -1067,6 +1118,10 @@ impl NetworkHandler {
     async fn handle_get_peer_performance(&self, _request: ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         info!("API: Getting peer performance statistics");
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Peer performance tracking not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::list_peer_performance().await {
             Ok(peer_stats) => {
                 let peer_infos: Vec<PeerPerformanceInfo> = peer_stats.iter().map(|stats| {
@@ -1118,6 +1173,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 
     /// Get specific peer performance statistics
@@ -1139,6 +1195,10 @@ impl NetworkHandler {
         
         info!("API: Getting performance statistics for peer: {}", peer_id);
         
+        // Advanced monitoring not yet integrated into MeshBridge
+        return Ok(ZhtpResponse::error(ZhtpStatus::NotImplemented, "Peer performance tracking not yet available".to_string()));
+        
+        /*
         match crate::runtime::mesh_router_provider::get_peer_performance(&peer_id).await {
             Ok(Some(stats)) => {
                 let status = if stats.violations > 10 {
@@ -1194,6 +1254,7 @@ impl NetworkHandler {
                 ))
             }
         }
+        */
     }
 }
 

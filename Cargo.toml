@@ -7,9 +7,26 @@ description = "ZHTP Network Node - Complete Internet Replacement and Web4 Orches
 license = "MIT"
 repository = "https://github.com/zhtp/zhtp"
 
+# Legacy unified binary (kept for backward compatibility)
 [[bin]]
 name = "zhtp"
 path = "src/main.rs"
+
+# Node-type specific binaries (recommended)
+[[bin]]
+name = "zhtp-edge"
+path = "src/bin/zhtp-edge.rs"
+required-features = ["edge"]
+
+[[bin]]
+name = "zhtp-full"
+path = "src/bin/zhtp-full.rs"
+required-features = ["full-node"]
+
+[[bin]]
+name = "zhtp-validator"
+path = "src/bin/zhtp-validator.rs"
+required-features = ["validator"]
 
 # Main library (for orchestrator binary and tests)
 [lib]
@@ -72,6 +89,8 @@ reqwest = { version = "0.11", features = ["json"] }
 axum = { version = "0.7", features = ["json", "tokio"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+tokio-tungstenite = "0.21"  # WebSocket server for browser clients
+futures-util = "0.3"  # Stream utilities for WebSocket
 
 # Additional utilities for integration
 parking_lot = "0.12"
@@ -129,18 +148,19 @@ windows-bluetooth = ["lib-network/windows-gatt"]  # Windows GATT Server with Win
 linux-bluetooth = ["lib-network/enhanced-parsing"]  # Linux uses BlueZ via D-Bus
 macos-bluetooth = ["lib-network/macos-corebluetooth"]
 
-# Node type profiles
-validator = ["full-blockchain", "lib-proofs/production"]  # Full validator node
-relay = ["basic-blockchain", "lib-proofs/std"]  # Relay node (verify only, no proving)
-edge = ["minimal-blockchain"]  # Edge node (routing only)
+# Node type profiles (NEW: used by separate binaries)
+edge = ["minimal-blockchain"]  # Edge node: headers only, no contracts, no consensus
+full-node = ["full-blockchain", "lib-proofs/std"]  # Full node: complete blockchain + WASM, no consensus
+validator = ["full-blockchain", "lib-proofs/production"]  # Validator: consensus + staking
 
-# Mobile profiles
-mobile = ["minimal-blockchain"]  # Base mobile configuration (minimal features)
-android = ["mobile"]  # Android mobile app
-ios = ["mobile"]  # iOS mobile app
+# Legacy profiles (deprecated - use binary-specific features above)
+relay = ["basic-blockchain", "lib-proofs/std"]  # Relay node (verify only, no proving) - DEPRECATED
+mobile = ["edge"]  # Mobile now uses edge profile
 
-# Raspberry Pi optimized profile - minimal features for low-memory compilation
-rpi = ["basic-blockchain", "relay"]  # Raspberry Pi optimized build (no WASM runtime)
+# Platform profiles
+android = ["edge"]  # Android mobile app
+ios = ["edge"]  # iOS mobile app
+rpi = ["full-node"]  # Raspberry Pi optimized build
 
 [profile.dev]
 # Faster compilation, less memory usage

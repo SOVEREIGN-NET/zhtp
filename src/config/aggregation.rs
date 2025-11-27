@@ -13,7 +13,7 @@ use super::{MeshMode, SecurityLevel, Environment, ConfigError, CliArgs};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
     // Core node settings
-    pub node_id: [u8; 32],
+    pub node_id: lib_storage::types::NodeId,
     pub mesh_mode: MeshMode,
     pub security_level: SecurityLevel,
     pub environment: Environment,
@@ -347,7 +347,7 @@ pub struct ProtocolsConfigPackage {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            node_id: [0u8; 32], // Will be generated during initialization
+            node_id: lib_network::node_id::generate_temporary(), // Temporary node ID
             mesh_mode: MeshMode::Hybrid,
             security_level: SecurityLevel::High,
             environment: Environment::Development,
@@ -378,7 +378,7 @@ impl Default for NodeConfig {
             },
             
             storage_config: StorageConfig {
-                dht_port: 33442,
+                dht_port: lib_network::constants::ports::DHT,
                 blockchain_storage_gb: 100,
                 hosted_storage_gb: 100,
                 personal_storage_gb: 0,
@@ -389,7 +389,7 @@ impl Default for NodeConfig {
             },
             
             network_config: NetworkConfig {
-                mesh_port: 33444, // DEFAULT_MESH_PORT
+                mesh_port: lib_network::constants::ports::QUIC_MESH, // Primary QUIC protocol
                 max_peers: 100,
                 protocols: vec![
                     "mesh".to_string(),
@@ -399,8 +399,8 @@ impl Default for NodeConfig {
                     "tcp".to_string()
                 ],
                 bootstrap_peers: vec![
-                    "127.0.0.1:9333".to_string(),
-                    "192.168.1.245:9333".to_string(),
+                    format!("127.0.0.1:{}", lib_network::constants::ports::QUIC_MESH),
+                    format!("192.168.1.245:{}", lib_network::constants::ports::QUIC_MESH),
                 ],
                 long_range_relays: false,
                 bootstrap_validators: Vec::new(), // Gap 5: Empty by default
@@ -440,8 +440,8 @@ impl Default for NodeConfig {
             protocols_config: ProtocolsConfig {
                 lib_enabled: true,
                 zdns_enabled: true,
-                api_port: 9333,
-                max_connections: 1000,
+                api_port: lib_network::constants::ports::QUIC_MESH, // Unified server: shares port with QUIC mesh
+                max_connections: 1000, // lib_network::constants::limits::MAX_CONNECTIONS
                 request_timeout_ms: 30000,
             },
             
@@ -662,5 +662,82 @@ async fn load_package_config<T: for<'de> Deserialize<'de>>(
         Err(ConfigError::PackageMissing {
             package: package_name.to_string()
         }.into())
+    }
+}
+
+// ==================== Conversion Traits ====================
+
+/// Convert zhtp NetworkConfig to canonical lib_network::NetworkConfig
+impl From<NetworkConfig> for lib_network::NetworkConfig {
+    fn from(config: NetworkConfig) -> Self {
+        // Parse protocol strings to NetworkProtocol enum
+        let protocols: Vec<lib_network::protocols::NetworkProtocol> = config
+            .protocols
+            .iter()
+            .filter_map(|s| match s.to_lowercase().as_str() {
+                "bluetooth" | "bluetooth_le" | "ble" => Some(lib_network::protocols::NetworkProtocol::BluetoothLE),
+                "bluetooth_classic" | "bt_classic" => Some(lib_network::protocols::NetworkProtocol::BluetoothClassic),
+                "wifi_direct" | "wifi" => Some(lib_network::protocols::NetworkProtocol::WiFiDirect),
+                "lorawan" | "lora" => Some(lib_network::protocols::NetworkProtocol::LoRaWAN),
+                "satellite" => Some(lib_network::protocols::NetworkProtocol::Satellite),
+                "tcp" => Some(lib_network::protocols::NetworkProtocol::TCP),
+                "udp" => Some(lib_network::protocols::NetworkProtocol::UDP),
+                "quic" => Some(lib_network::protocols::NetworkProtocol::QUIC),
+                _ => {
+                    tracing::warn!("Unknown protocol string: {}", s);
+                    None
+                }
+            })
+            .collect();
+        
+        // Use a temporary node_id - should be set by caller with actual identity-derived ID
+        let node_id = lib_network::node_id::generate_temporary();
+        
+        lib_network::NetworkConfig {
+            node_id,
+            mesh_port: config.mesh_port,
+            quic_port: config.mesh_port + 1, // Default QUIC port
+            max_peers: config.max_peers as u32,
+            protocols,
+            bootstrap_peers: config.bootstrap_peers,
+            listen_addresses: vec![],
+            long_range_relays: config.long_range_relays,
+            connection_timeout_ms: 10000,
+            peer_discovery_interval_ms: 30000,
+        }
+    }
+}
+
+/// Convert environment NetworkSettings to canonical lib_network::NetworkConfig
+impl From<super::environment::NetworkSettings> for lib_network::NetworkConfig {
+    fn from(settings: super::environment::NetworkSettings) -> Self {
+        let node_id = lib_network::node_id::generate_temporary();
+        
+        lib_network::NetworkConfig {
+            node_id,
+            mesh_port: lib_network::constants::ports::QUIC_MESH, // Unified server: use QUIC port for mesh
+            quic_port: lib_network::constants::ports::QUIC_MESH,
+            max_peers: settings.max_peers as u32,
+            protocols: vec![
+                lib_network::protocols::NetworkProtocol::QUIC,
+                lib_network::protocols::NetworkProtocol::BluetoothLE,
+                lib_network::protocols::NetworkProtocol::WiFiDirect,
+            ],
+            bootstrap_peers: settings.bootstrap_peers,
+            listen_addresses: vec![],
+            long_range_relays: false,
+            connection_timeout_ms: settings.connection_timeout_ms,
+            peer_discovery_interval_ms: settings.peer_discovery_interval_ms,
+        }
+    }
+}
+
+/// Helper method to create lib_network::NetworkConfig from NodeConfig
+impl NodeConfig {
+    /// Convert this NodeConfig to canonical lib_network::NetworkConfig
+    pub fn to_network_config(&self) -> lib_network::NetworkConfig {
+        let mut network_config: lib_network::NetworkConfig = self.network_config.clone().into();
+        network_config.node_id = self.node_id.clone();
+        network_config
     }
 }

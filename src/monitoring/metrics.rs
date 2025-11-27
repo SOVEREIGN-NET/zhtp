@@ -9,29 +9,7 @@ use std::sync::{Arc, atomic::{AtomicU64, AtomicBool, Ordering}};
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant, interval};
 use tracing::{info, warn, error, debug};
-
-/// Helper function to create default storage configuration
-fn create_default_storage_config() -> Result<lib_storage::UnifiedStorageConfig> {
-    use lib_storage::{UnifiedStorageConfig, StorageConfig, ErasureConfig};
-    use lib_storage::StorageTier;
-    use lib_crypto::Hash;
-    
-    Ok(UnifiedStorageConfig {
-        node_id: Hash([1u8; 32]), // Simple node ID wrapped in Hash
-        addresses: vec!["127.0.0.1:8080".to_string()],
-        economic_config: Default::default(), // Use default for EconomicManagerConfig
-        storage_config: StorageConfig {
-            max_storage_size: 1024 * 1024 * 1024, // 1GB
-            default_tier: StorageTier::Hot, // Use available variant
-            enable_compression: true,
-            enable_encryption: true,
-        },
-        erasure_config: ErasureConfig {
-            data_shards: 4,
-            parity_shards: 2,
-        },
-    })
-}
+use crate::config::storage_defaults::create_test_storage_config;
 
 /// Metrics collector for ZHTP components
 pub struct MetricsCollector {
@@ -69,7 +47,7 @@ pub struct SystemMetrics {
     pub network_packets_received: u64,
     pub network_errors: u64,
     pub peer_count: usize,
-    pub connection_count: usize,
+    pub active_connections: usize,
     
     // Blockchain metrics
     pub current_block_height: u64,
@@ -139,7 +117,7 @@ impl Default for SystemMetrics {
             network_packets_received: 0,
             network_errors: 0,
             peer_count: 0,
-            connection_count: 0,
+            active_connections: 0,
             
             current_block_height: 0,
             total_transactions: 0,
@@ -370,7 +348,7 @@ impl MetricsCollector {
         if let Ok(net_stats) = lib_network::get_network_statistics().await {
             metrics.network_bytes_sent = net_stats.bytes_sent;
             metrics.network_bytes_received = net_stats.bytes_received;
-            metrics.connection_count = net_stats.connection_count;
+            metrics.active_connections = net_stats.active_connections;
             // Note: bandwidth_usage is available but we don't have bytes sent/received separately
             metrics.network_packets_sent = 0; // Not available in current stats
             metrics.network_packets_received = 0; // Not available in current stats
@@ -384,7 +362,7 @@ impl MetricsCollector {
             metrics.network_bytes_received = 0;
             metrics.network_packets_sent = 0;
             metrics.network_packets_received = 0;
-            metrics.connection_count = 0;
+            metrics.active_connections = 0;
             metrics.network_tx_bytes = 0;
             metrics.network_rx_bytes = 0;
         }
@@ -419,7 +397,7 @@ impl MetricsCollector {
     /// Collect storage metrics using lib-storage
     async fn collect_storage_metrics(metrics: &mut SystemMetrics) -> Result<()> {
         // Get storage metrics from lib-storage package with proper config
-        if let Ok(config) = create_default_storage_config() {
+        if let Ok(config) = create_test_storage_config() {
             if let Ok(mut storage) = lib_storage::UnifiedStorageSystem::new(config).await {
                 // Try to get storage statistics
                 match storage.get_statistics().await {

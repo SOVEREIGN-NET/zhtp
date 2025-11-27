@@ -12,8 +12,20 @@ pub mod server;
 pub mod unified_server;
 pub mod session_manager;
 pub mod security;
-pub mod discovery_coordinator;
 pub mod utils;
+
+// Node-type specific modules
+#[cfg(feature = "edge")]
+pub mod edge;
+
+#[cfg(feature = "full-node")]
+pub mod full;
+
+#[cfg(feature = "validator")]
+pub mod validator;
+
+// Shared components (always available)
+pub mod shared;
 
 // Mobile FFI bindings (re-exported from lib-network for mobile builds)
 #[cfg(any(feature = "mobile", feature = "android", feature = "ios"))]
@@ -30,7 +42,6 @@ pub use unified_server::ZhtpUnifiedServer;
 pub use server::IncomingProtocol;
 pub use session_manager::SessionManager;
 pub use security::{Protocol, ProtocolFilter};
-pub use discovery_coordinator::{DiscoveryCoordinator, DiscoveryProtocol, DiscoveryStrategy, DiscoveredPeer};
 
 /// ZHTP node version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

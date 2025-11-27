@@ -46,8 +46,11 @@ impl MarketplaceHandler {
     async fn handle_request_internal(&self, request: &ZhtpRequest) -> ZhtpResult<ZhtpResponse> {
         let path = &request.uri;
         
+        // Strip query parameters before parsing path segments
+        let path_without_query = path.split('?').next().unwrap_or(path);
+        
         // Parse path segments
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let segments: Vec<&str> = path_without_query.split('/').filter(|s| !s.is_empty()).collect();
         
         match (request.method, segments.as_slice()) {
             // POST /api/marketplace/content/{content_hash}/transfer
@@ -527,14 +530,26 @@ impl MarketplaceHandler {
         let memo = serde_json::to_vec(&metadata)
             .map_err(|e| anyhow!("Failed to serialize metadata: {}", e))?;
         
-        // Build and sign transaction using TransactionBuilder with real private key
+        // Build and sign transaction using TransactionBuilder with real keypair
         use lib_blockchain::transaction::TransactionBuilder;
-        use lib_crypto::PrivateKey;
+        use lib_crypto::{PrivateKey, PublicKey, KeyPair};
         
         let private_key = PrivateKey {
-            dilithium_sk: identity_private_key_bytes,
+            dilithium_sk: identity_private_key_bytes.clone(),
             kyber_sk: Vec::new(),
             master_seed: identity_seed.to_vec(),
+        };
+        
+        // Get public key from wallet_pubkey (which is the dilithium public key)
+        let public_key = PublicKey {
+            dilithium_pk: wallet_pubkey.clone(),
+            kyber_pk: Vec::new(),
+            key_id: [0; 32],
+        };
+        
+        let keypair = KeyPair {
+            public_key,
+            private_key,
         };
         
         let mut transaction = TransactionBuilder::new()
@@ -542,7 +557,7 @@ impl MarketplaceHandler {
             .add_inputs(inputs)
             .add_outputs(outputs)
             .fee(fee)
-            .build(&private_key)
+            .build(&keypair)
             .map_err(|e| anyhow!("Failed to build transaction: {:?}", e))?;
         
         // Set memo

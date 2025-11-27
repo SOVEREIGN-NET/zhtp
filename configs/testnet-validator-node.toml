@@ -30,7 +30,6 @@ recovery_modes = ["mnemonic", "social"]  # Simpler recovery for testing
 reputation_enabled = true
 
 [storage_config]
-dht_port = 33443  # Testnet DHT port
 storage_capacity_gb = 200  # Lower storage for testnet validators
 replication_factor = 2     # Lower replication for testing
 erasure_coding = true
@@ -110,7 +109,7 @@ allow_unsafe_operations = true  # Allow testing edge cases
 rate_limiting = false
 audit_logging = true
 penetration_testing_mode = true
-firewall_enabled = false
+# firewall_enabled removed - configure system firewall manually (see deployment-guide.md)
 ddos_protection = false
 intrusion_detection = true
 

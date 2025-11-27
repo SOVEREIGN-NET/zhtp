@@ -87,7 +87,9 @@ impl ZhtpRequestHandler for WalletHandler {
             // GET /api/v1/wallet/transactions/{identity_id}
             (ZhtpMethod::Get, path) if path.starts_with("/api/v1/wallet/transactions/") => {
                 let identity_id = path.strip_prefix("/api/v1/wallet/transactions/").unwrap_or("");
-                self.handle_get_transactions(identity_id).await
+                // Strip query parameters before processing
+                let identity_id_clean = identity_id.split('?').next().unwrap_or(identity_id);
+                self.handle_get_transactions(identity_id_clean).await
             }
             // POST /api/v1/wallet/send
             (ZhtpMethod::Post, "/api/v1/wallet/send") => {

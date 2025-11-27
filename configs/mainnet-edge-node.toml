@@ -30,7 +30,6 @@ recovery_modes = ["mnemonic", "social"]
 reputation_enabled = true
 
 [storage_config]
-dht_port = 33444  # Mainnet DHT port
 storage_capacity_gb = 20  # Minimal storage
 replication_factor = 1    # No replication on edge
 erasure_coding = false    # Too resource-intensive

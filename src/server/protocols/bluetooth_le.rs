@@ -21,26 +21,19 @@ use tracing::{debug, info, warn};
 use lib_network::protocols::bluetooth::BluetoothMeshProtocol;
 use lib_crypto::PublicKey;
 use lib_network::types::mesh_message::ZhtpMeshMessage;
-use crate::server::mesh::core::MeshRouter;
+use crate::server::mesh_bridge::MeshBridge;
 
 /// Bluetooth Low Energy mesh protocol router for phone connectivity
 #[derive(Clone)]
 pub struct BluetoothRouter {
     connected_devices: Arc<RwLock<HashMap<String, String>>>,
-    node_id: [u8; 32],
+    node_id: lib_storage::types::NodeId,
     protocol: Arc<RwLock<Option<Arc<BluetoothMeshProtocol>>>>,
 }
 
 impl BluetoothRouter {
     pub fn new() -> Self {
-        let node_id = {
-            let mut id = [0u8; 32];
-            let uuid = Uuid::new_v4();
-            let uuid_bytes = uuid.as_bytes();
-            id[..16].copy_from_slice(uuid_bytes);
-            id[16..].copy_from_slice(uuid_bytes); // Fill remaining with same UUID
-            id
-        };
+        let node_id = lib_network::node_id::generate_temporary();
         
         Self {
             connected_devices: Arc::new(RwLock::new(HashMap::new())),
@@ -56,13 +49,22 @@ impl BluetoothRouter {
         peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<PublicKey>>,
         our_public_key: PublicKey,
         blockchain_provider: Option<Arc<dyn lib_network::blockchain_sync::BlockchainProvider>>,
-        sync_coordinator: Arc<lib_network::blockchain_sync::SyncCoordinator>,
-        mesh_router: Arc<MeshRouter>,
+        sync_manager: Arc<lib_network::blockchain_sync::BlockchainSyncManager>,
+        mesh_bridge: Arc<MeshBridge>,
+        auth_manager: Option<lib_network::protocols::zhtp_auth::ZhtpAuthManager>,
     ) -> Result<()> {
         info!("📱 Initializing Bluetooth mesh protocol for phone connectivity...");
         
         // Create Bluetooth mesh protocol instance
-        let mut bluetooth_protocol = BluetoothMeshProtocol::new(self.node_id, our_public_key)?;
+        let mut bluetooth_protocol = BluetoothMeshProtocol::new(self.node_id.clone(), our_public_key)?;
+        
+        // Set ZHTP authentication manager if provided
+        if let Some(auth) = auth_manager {
+            bluetooth_protocol.set_auth_manager(auth).await;
+            info!("✅ ZHTP authentication configured for Bluetooth LE");
+        } else {
+            warn!("⚠️  No auth manager provided - using fallback authentication");
+        }
         
         // ========================================================================
         // Phase 6: Enable BLE edge node sync if blockchain provider is available
@@ -95,8 +97,8 @@ impl BluetoothRouter {
         let connected_devices = self.connected_devices.clone();
         let mesh_conns = mesh_connections.clone();
         let ble_peer_notify = peer_discovery_tx.clone();
-        let sync_coordinator_for_gatt = sync_coordinator.clone();
-        let mesh_router_for_gatt = mesh_router.clone();
+        let sync_manager_for_gatt = sync_manager.clone();
+        let mesh_bridge_for_gatt = mesh_bridge.clone();
         let bluetooth_protocol_for_gatt = protocol_arc.clone(); // Clone protocol for GATT handler
         tokio::spawn(async move {
             while let Some(gatt_message) = gatt_rx.recv().await {
@@ -115,13 +117,15 @@ impl BluetoothRouter {
                             // Extract the real cryptographic public key from handshake
                             let peer_pubkey = handshake.public_key.clone();
                             
-                            // FIX: Use peripheral_id for macOS, node_id for other platforms
+                            // CRITICAL: GATT address MUST match what send_mesh_message() will use
+                            // macOS: peripheral_id is the CBPeripheral UUID (required for Core Bluetooth writes)
+                            // Windows/Linux: Use node_id (matched with device tracker)
                             let gatt_address = if let Some(ref pid) = peripheral_id {
-                                format!("gatt://{}", pid)  // macOS: Use CBPeripheral UUID
+                                format!("gatt://{}", pid)  // macOS: CBPeripheral UUID
                             } else {
-                                format!("gatt://{}", handshake.node_id)  // Windows/Linux: Use node_id
+                                format!("gatt://{}", handshake.node_id)  // Windows/Linux: node_id
                             };
-                            info!("   📍 GATT address: {}", gatt_address);
+                            info!("   📍 GATT address: {} (peripheral_id: {:?})", gatt_address, peripheral_id);
                             
                             // Create mesh connection for GATT peer
                             let connection = lib_network::mesh::connection::MeshConnection {
@@ -151,11 +155,13 @@ impl BluetoothRouter {
                             mesh_conns.write().await.insert(peer_pubkey.clone(), connection);
                             info!("   ✅ Added GATT peer {} to mesh network", handshake.node_id);
                             
-                            // FIX: Also register with BluetoothMeshProtocol.current_connections
-                            // This is required for send_mesh_message() to find the peer
+                            // CRITICAL: Register with BluetoothMeshProtocol.current_connections
+                            // The address key MUST match what will be used in send_mesh_message() lookups
+                            // macOS: peripheral_id is required for macos_transmit_gatt() to find CBPeripheral
+                            // Windows/Linux: Uses device tracker with node_id as key
                             let ble_connection = lib_network::protocols::bluetooth::BluetoothConnection {
                                 peer_id: handshake.node_id.to_string(),
-                                address: gatt_address.clone(),
+                                address: gatt_address.clone(),  // This is the lookup key!
                                 mtu: 247,  // Default BLE MTU
                                 rssi: -50, // Placeholder RSSI
                                 connected_at: std::time::SystemTime::now()
@@ -168,14 +174,16 @@ impl BluetoothRouter {
                                     .as_secs(),
                             };
                             bluetooth_protocol_for_gatt.current_connections.write().await.insert(gatt_address.clone(), ble_connection);
-                            info!("   ✅ Registered GATT peer in bluetooth_protocol.current_connections: {}", gatt_address);
+                            info!("   ✅ Registered GATT peer in bluetooth_protocol.current_connections");
+                            info!("      Key: {}", gatt_address);
+                            info!("      This address will be used for all future send_mesh_message() calls");
                             
                             // Register peer in DHT Kademlia routing table
                             // Generate node_id from public key hash (Blake3)
-                            let node_id: [u8; 32] = lib_crypto::hash_blake3(&peer_pubkey.key_id);
+                            let node_id = lib_network::node_id::from_peer_public_key(&peer_pubkey);
                             // Note: KademliaNode registration removed (type no longer available)
                             // TODO: Use ZkDHTIntegration::register_peer() instead
-                            info!("   📝 Would register BLE peer in Kademlia routing table: node_id={}", hex::encode(&node_id[0..8]));
+                            info!("   📝 Would register BLE peer in Kademlia routing table: node_id={}", hex::encode(&node_id.as_bytes()[0..8]));
                             
                             // Track connected device
                             let device_key = handshake.node_id.to_string();
@@ -204,7 +212,7 @@ impl BluetoothRouter {
                                           request_id, start_height, count);
                                     
                                     // Get blockchain provider and fetch headers
-                                    if let Some(provider) = mesh_router_for_gatt.get_blockchain_provider().await {
+                                    if let Some(provider) = mesh_bridge_for_gatt.get_blockchain_provider().await {
                                         match provider.get_headers(*start_height, *count as u64).await {
                                             Ok(headers) => {
                                                 info!("📤 GATT: Sending {} headers back to requester", headers.len());
@@ -222,7 +230,7 @@ impl BluetoothRouter {
                                                 };
                                                 
                                                 // Send response back via BLE
-                                                if let Err(e) = mesh_router_for_gatt.send_to_peer(requester, response).await {
+                                                if let Err(e) = mesh_bridge_for_gatt.send_to_peer(requester, response).await {
                                                     warn!("Failed to send HeadersResponse via GATT: {}", e);
                                                 } else {
                                                     info!("✅ GATT: HeadersResponse sent successfully");
@@ -245,12 +253,12 @@ impl BluetoothRouter {
                                     info!("✅ GATT: Received HeadersResponse (ID: {}, {} headers, starting at height {})", 
                                           request_id, headers.len(), start_height);
                                     
-                                    // Find peer by request_id and mark sync complete
-                                    if let Some((peer_id, sync_type)) = sync_coordinator_for_gatt.find_peer_by_sync_id(*request_id).await {
-                                        sync_coordinator_for_gatt.complete_sync(&peer_id, *request_id, sync_type).await;
-                                        info!("   ✅ Marked edge sync complete for peer {}", hex::encode(&peer_id.key_id[..8]));
+                                    // Mark sync request as complete
+                                    if sync_manager_for_gatt.is_request_pending(*request_id).await {
+                                        sync_manager_for_gatt.complete_request(*request_id).await;
+                                        info!("   ✅ Marked blockchain sync complete for request {}", request_id);
                                     } else {
-                                        warn!("   ⚠️  No active sync found for request_id {}", request_id);
+                                        debug!("   ℹ️  Request {} not tracked (may have already completed)", request_id);
                                     }
                                 }
                                 _ => {
@@ -290,25 +298,25 @@ impl BluetoothRouter {
                               request_id, headers.len());
                         // Edge node received headers - sync complete
                         
-                        // Find peer by request_id and mark sync complete
-                        if let Some((peer_id, sync_type)) = sync_coordinator_for_gatt.find_peer_by_sync_id(request_id).await {
-                            sync_coordinator_for_gatt.complete_sync(&peer_id, request_id, sync_type).await;
-                            info!("   ✅ Marked edge sync complete for peer {}", hex::encode(&peer_id.key_id[..8]));
+                        // Mark sync request as complete
+                        if sync_manager_for_gatt.is_request_pending(request_id).await {
+                            sync_manager_for_gatt.complete_request(request_id).await;
+                            info!("   ✅ Marked blockchain sync complete for request {}", request_id);
                         } else {
-                            warn!("   ⚠️  No active sync found for request_id {}", request_id);
+                            debug!("   ℹ️  Request {} not tracked (may have already completed)", request_id);
                         }
                     }
                     GattMessage::BootstrapProofResponse { request_id, proof_height, headers, .. } => {
-                        info!("✅ GATT: BootstrapProofResponse received (ID: {}, proof up to {}, {} headers)", 
+                        info!("✅ GATT: ProofResponse received (ID: {}, proof at height {}, {} headers)", 
                               request_id, proof_height, headers.len());
                         // Edge node received proof + headers - sync complete
                         
-                        // Find peer by request_id and mark sync complete
-                        if let Some((peer_id, sync_type)) = sync_coordinator_for_gatt.find_peer_by_sync_id(request_id).await {
-                            sync_coordinator_for_gatt.complete_sync(&peer_id, request_id, sync_type).await;
-                            info!("   ✅ Marked edge sync complete for peer {}", hex::encode(&peer_id.key_id[..8]));
+                        // Mark sync request as complete
+                        if sync_manager_for_gatt.is_request_pending(request_id).await {
+                            sync_manager_for_gatt.complete_request(request_id).await;
+                            info!("   ✅ Marked blockchain sync complete for request {}", request_id);
                         } else {
-                            warn!("   ⚠️  No active sync found for request_id {}", request_id);
+                            debug!("   ℹ️  Request {} not tracked (may have already completed)", request_id);
                         }
                     }
                     GattMessage::FragmentHeader { .. } => {
@@ -324,7 +332,7 @@ impl BluetoothRouter {
         });
         
         info!("✅ Bluetooth mesh protocol initialized - discoverable as 'ZHTP-{}'", 
-              hex::encode(&self.node_id[..4]));
+              hex::encode(&self.node_id.as_bytes()[..4]));
         info!("📱 Your phone can now discover and connect to this ZHTP node via Bluetooth");
         
         Ok(())
@@ -340,7 +348,7 @@ impl BluetoothRouter {
         &self,
         mut stream: TcpStream,
         addr: SocketAddr,
-        mesh_router: &MeshRouter,
+        mesh_bridge: &MeshBridge,
     ) -> Result<()> {
         info!("📱 Processing Bluetooth mesh connection from: {}", addr);
         
@@ -387,16 +395,15 @@ impl BluetoothRouter {
                 };
                 
                 // Add to mesh connections
-                {
-                    let mut connections = mesh_router.connections.write().await;
-                    connections.insert(peer_pubkey.clone(), connection);
-                    info!("✅ Bluetooth peer {} added to mesh network ({} total peers)", 
-                        handshake.node_id, connections.len());
+                if let Err(e) = mesh_bridge.register_peer(peer_pubkey.clone(), connection).await {
+                    warn!("Failed to register Bluetooth peer: {}", e);
+                } else {
+                    info!("✅ Bluetooth peer {} added to mesh network", handshake.node_id);
                 }
                 
                 // Run full authentication, key exchange, and DHT registration (same as TCP!)
                 info!("🔐 Starting automatic authentication (no pairing code needed)");
-                let _ = mesh_router.authenticate_and_register_peer(&peer_pubkey, &handshake, &addr, &mut stream).await;
+                let _ = mesh_bridge.authenticate_and_register_peer(&peer_pubkey, &handshake, &addr, &mut stream).await;
                 
                 // Send acknowledgment
                 let ack = bincode::serialize(&true)?;
@@ -411,13 +418,13 @@ impl BluetoothRouter {
                 if message.starts_with("ZHTP-MESH:") || message.starts_with("DHT:") {
                     info!("🌉 Bridging Bluetooth ZHTP traffic to DHT network");
                     
-                    // ACTUALLY CALL THE BRIDGE FUNCTION
-                    match mesh_router.bridge_bluetooth_to_dht(&buffer[..bytes_read], &addr).await {
+                    // Bridge Bluetooth DHT traffic to main network
+                    match mesh_bridge.bridge_bluetooth_to_dht(&buffer[..bytes_read], &addr).await {
                         Ok(()) => {
                             info!("✅ Bluetooth message successfully bridged to DHT");
                             let response = format!(
                                 "ZHTP/1.0 200 OK\r\nX-Protocol: Bluetooth-DHT-Bridge\r\nX-Node-ID: {:?}\r\nX-Service: ZHTP-Mesh\r\nX-Bridge: Active\r\n\r\nBridged to DHT network",
-                                &self.node_id[..8]
+                                &self.node_id.as_bytes()[..8]
                             );
                             let _ = stream.write_all(response.as_bytes()).await;
                         }
@@ -435,7 +442,7 @@ impl BluetoothRouter {
                     info!("Bluetooth message received (not DHT): {} bytes", bytes_read);
                     let response = format!(
                         "ZHTP/1.0 200 OK\r\nX-Protocol: Bluetooth\r\nX-Node-ID: {:?}\r\nX-Service: ZHTP-Mesh\r\n\r\nBluetooth mesh node ready",
-                        &self.node_id[..8]
+                        &self.node_id.as_bytes()[..8]
                     );
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
@@ -451,7 +458,7 @@ impl BluetoothRouter {
     
     /// Get the Bluetooth service name visible to phones
     pub fn get_service_name(&self) -> String {
-        format!("ZHTP-{}", hex::encode(&self.node_id[..4]))
+        format!("ZHTP-{}", hex::encode(&self.node_id.as_bytes()[..4]))
     }
     
     /// Check if Bluetooth is advertising and discoverable

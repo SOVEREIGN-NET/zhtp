@@ -1010,7 +1010,7 @@ async fn store_wallet_private_data_in_dht(
             hex::encode(&identity_id.0), 
             hex::encode(&wallet_id.0));
         
-        dht.store_content(
+        dht.store_web4_content(
             "wallet.zhtp", 
             &storage_path, 
             private_data_bytes
@@ -1050,7 +1050,7 @@ async fn distribute_standalone_wallet_to_dht(
         let path = format!("/identity/{}/wallet/{}", 
             hex::encode(&identity_id.0[..8]),
             hex::encode(&wallet_id.0[..8]));
-        dht.store_content(
+        dht.store_web4_content(
             "wallet.zhtp",
             &path,
             wallet_info_bytes
@@ -1237,7 +1237,7 @@ async fn distribute_identity_to_dht(identity_result: &serde_json::Value) -> Resu
         // Store DID document
         let did_doc_bytes = serde_json::to_vec(&did_document)?;
         let did_path = format!("/did/{}", identity_id);
-        dht.store_content("identity.zhtp", &did_path, did_doc_bytes).await?;
+        dht.store_web4_content("identity.zhtp", &did_path, did_doc_bytes).await?;
         
         // Store wallet registry
         if let Some(citizenship_result) = identity_result.get("citizenship_result") {
@@ -1270,7 +1270,7 @@ async fn distribute_identity_to_dht(identity_result: &serde_json::Value) -> Resu
             
             let wallet_registry_bytes = serde_json::to_vec(&wallet_registry)?;
             let registry_path = format!("/registry/{}", identity_id);
-            dht.store_content("wallet.zhtp", &registry_path, wallet_registry_bytes).await?;
+            dht.store_web4_content("wallet.zhtp", &registry_path, wallet_registry_bytes).await?;
             
             info!("💳 Distributed wallet registry to DHT");
         }

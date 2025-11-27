@@ -1,89 +1,90 @@
 //! Network Isolation CLI Commands
 //! 
-//! Commands for managing network isolation and ensuring ISP-free mesh operation
+//! Commands for displaying firewall configuration documentation
+//! 
+//! NOTE: This application does NOT modify system firewalls.
+//! All firewall configuration must be done manually by administrators.
 
 use anyhow::Result;
-use crate::config::network_isolation::{NetworkIsolationConfig, initialize_network_isolation, verify_mesh_isolation};
+use crate::config::network_isolation::{NetworkIsolationConfig, show_firewall_documentation};
 use crate::cli::{IsolationArgs, IsolationAction, ZhtpCli};
 
-/// Apply network isolation to block internet access
+/// Show firewall configuration documentation
 pub async fn apply_isolation() -> Result<String> {
-    match initialize_network_isolation().await {
-        Ok(()) => {
-            // Verify it worked
-            match verify_mesh_isolation().await {
-                Ok(true) => Ok(" Network isolation applied successfully - mesh is now ISP-free!".to_string()),
-                Ok(false) => Ok(" Network isolation applied but internet access still detected".to_string()),
-                Err(e) => Ok(format!("Network isolation applied but verification failed: {}", e)),
-            }
-        },
-        Err(e) => Ok(format!("Failed to apply network isolation: {}", e)),
-    }
-}
-
-/// Check current network isolation status
-pub async fn check_isolation_status() -> Result<String> {
-    match verify_mesh_isolation().await {
-        Ok(true) => Ok(" Network is isolated - no internet access (ISP-free mesh)".to_string()),
-        Ok(false) => Ok(" Network has internet access - not isolated".to_string()),
-        Err(e) => Ok(format!("Could not determine isolation status: {}", e)),
-    }
-}
-
-/// Show network isolation configuration
-pub async fn show_isolation_config() -> Result<String> {
     let config = NetworkIsolationConfig::default();
     
     let mut output = String::new();
-    output.push_str(" Network Isolation Configuration:\n");
-    output.push_str(&format!("Isolation enabled: {}\n", config.enable_isolation));
-    output.push_str("Allowed subnets:\n");
-    for subnet in &config.allowed_subnets {
-        output.push_str(&format!("  - {}\n", subnet));
-    }
-    output.push_str("DHCP Configuration:\n");
-    output.push_str(&format!("  IP range: {} - {}\n", 
-        config.dhcp_config.ip_range_start, 
-        config.dhcp_config.ip_range_end));
-    output.push_str(&format!("  Default gateway: {:?}\n", config.dhcp_config.default_gateway));
-    output.push_str(&format!("  DNS servers: {:?}\n", config.dhcp_config.dns_servers));
+    output.push_str("\n═══════════════════════════════════════════════════════════════\n");
+    output.push_str("  IMPORTANT: Manual Firewall Configuration Required\n");
+    output.push_str("═══════════════════════════════════════════════════════════════\n\n");
+    output.push_str("This application does NOT automatically configure firewalls.\n");
+    output.push_str("System administrators must manually configure firewall rules.\n\n");
+    output.push_str(&config.get_firewall_documentation());
+    output.push_str("\nFor detailed instructions, see: zhtp/docs/deployment-guide.md\n");
     
     Ok(output)
 }
 
-/// Remove network isolation (restore internet access)
-pub async fn remove_isolation() -> Result<String> {
-    let config = NetworkIsolationConfig::default();
-    
-    match config.remove_isolation().await {
-        Ok(()) => Ok(" Network isolation removed - internet access restored".to_string()),
-        Err(e) => Ok(format!("Failed to remove network isolation: {}", e)),
-    }
-}
-
-/// Test network connectivity
-pub async fn test_connectivity() -> Result<String> {
+/// Show firewall configuration status
+pub async fn check_isolation_status() -> Result<String> {
     let config = NetworkIsolationConfig::default();
     
     let mut output = String::new();
-    output.push_str(" Testing network connectivity:\n");
-    
-    // Test local connectivity
-    match config.test_connectivity("127.0.0.1").await {
-        Ok(true) => output.push_str(" Local (127.0.0.1): Reachable\n"),
-        Ok(false) => output.push_str(" Local (127.0.0.1): Not reachable\n"),
-        Err(e) => output.push_str(&format!(" Local (127.0.0.1): Test failed - {}\n", e)),
+    output.push_str("\n Network Isolation Configuration (Documentation Only):\n\n");
+    output.push_str(&format!("  Isolation mode: {}\n", 
+        if config.enable_isolation { "ENABLED (for documentation)" } else { "DISABLED" }));
+    output.push_str("  \n");
+    output.push_str("  Required ports:\n");
+    for port in &config.required_ports {
+        output.push_str(&format!("    - {}/{} ({}): {}\n",
+            port.port, port.protocol, port.direction, port.description));
     }
+    output.push_str("  \n");
+    output.push_str("  Note: This flag does NOT modify system firewalls.\n");
+    output.push_str("  Administrators must manually configure firewall rules.\n");
+    output.push_str("  \n");
+    output.push_str("  Use 'zhtp isolation apply' to see firewall configuration commands.\n");
     
-    // Test internet connectivity
-    let internet_hosts = vec!["8.8.8.8", "1.1.1.1", "google.com"];
-    for host in internet_hosts {
-        match config.test_connectivity(host).await {
-            Ok(true) => output.push_str(&format!(" Internet ({}): Reachable (isolation may be broken)\n", host)),
-            Ok(false) => output.push_str(&format!(" Internet ({}): Not reachable (good isolation)\n", host)),
-            Err(e) => output.push_str(&format!(" Internet ({}): Test failed (good isolation) - {}\n", host, e)),
-        }
-    }
+    Ok(output)
+}
+
+/// Show firewall configuration documentation (deprecated - use 'apply')
+pub async fn remove_isolation() -> Result<String> {
+    let mut output = String::new();
+    output.push_str("\n═══════════════════════════════════════════════════════════════\n");
+    output.push_str("  Note: Firewall Configuration is Manual Only\n");
+    output.push_str("═══════════════════════════════════════════════════════════════\n\n");
+    output.push_str("This application cannot automatically remove firewall rules.\n");
+    output.push_str("To restore internet access, manually remove firewall rules using:\n\n");
+    output.push_str("Ubuntu/Debian:\n");
+    output.push_str("  sudo ufw status numbered\n");
+    output.push_str("  sudo ufw delete [rule_number]\n\n");
+    output.push_str("CentOS/RHEL:\n");
+    output.push_str("  sudo firewall-cmd --list-all\n");
+    output.push_str("  sudo firewall-cmd --permanent --remove-port=PORT/PROTOCOL\n");
+    output.push_str("  sudo firewall-cmd --reload\n\n");
+    output.push_str("Windows:\n");
+    output.push_str("  Use Windows Defender Firewall GUI to manage rules\n");
+    
+    Ok(output)
+}
+
+/// Display help about firewall testing
+pub async fn test_connectivity() -> Result<String> {
+    let mut output = String::new();
+    output.push_str("\n Network Connectivity Testing:\n\n");
+    output.push_str("To test if your firewall rules are working:\n\n");
+    output.push_str("1. Test local connectivity:\n");
+    output.push_str("   ping 127.0.0.1\n\n");
+    output.push_str("2. Test mesh port (should be open):\n");
+    output.push_str("   telnet localhost 33444\n");
+    output.push_str("   or: nc -zv localhost 33444\n\n");
+    output.push_str("3. Test if external connections work:\n");
+    output.push_str("   From another machine: telnet [this_ip] 33444\n\n");
+    output.push_str("4. Check firewall status:\n");
+    output.push_str("   Ubuntu/Debian: sudo ufw status\n");
+    output.push_str("   CentOS/RHEL:   sudo firewall-cmd --list-all\n");
+    output.push_str("   Windows:       netsh advfirewall show allprofiles\n");
     
     Ok(output)
 }

@@ -10,15 +10,10 @@
 //!
 //! Total: 1,013 lines extracted from 1,250-line protocol layer (81%)
 //!
-//! ## Protocol Comparison
+//! ## Protocol Capabilities
 //!
-//! | Protocol           | Bandwidth  | Latency | Range  | Use Case                      |
-//! |--------------------|------------|---------|--------|-------------------------------|
-//! | WiFi Direct        | 25 Mbps    | 10ms    | 200m   | P2P mesh, mDNS discovery      |
-//! | Bluetooth LE       | 250 KB/s   | 100ms   | 100m   | Phone sync, edge nodes        |
-//! | Bluetooth Classic  | 375 KB/s   | 50ms    | 100m   | High-throughput mobile        |
-//! | UDP Mesh           | 100 Mbps   | 5ms     | LAN    | Primary mesh protocol         |
-//! | QUIC Mesh          | 100 Mbps   | 10ms    | WAN    | NAT traversal, encryption     |
+//! For protocol specifications and capabilities, see `lib_network::protocols::NetworkProtocol`.
+//! All protocol characteristics (bandwidth, latency, range) are defined in the canonical enum.
 
 pub mod wifi;
 pub mod bluetooth_le;

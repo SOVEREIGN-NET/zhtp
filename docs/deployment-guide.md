@@ -116,6 +116,9 @@ sudo chmod 755 /etc/zhtp
 ```
 
 ### Network Configuration
+
+**IMPORTANT:** ZHTP does NOT automatically configure firewalls. All firewall configuration must be done manually by system administrators using the commands below.
+
 ```bash
 # Configure firewall (Ubuntu/Debian)
 sudo ufw allow 9333/tcp   # API port
@@ -128,6 +131,13 @@ sudo firewall-cmd --permanent --add-port=9333/tcp
 sudo firewall-cmd --permanent --add-port=33444/tcp
 sudo firewall-cmd --permanent --add-port=33444/udp
 sudo firewall-cmd --reload
+
+# Windows Firewall
+# Open Windows Defender Firewall with Advanced Security
+# Create inbound rules for:
+#   - TCP port 9333 (API)
+#   - TCP port 33444 (Mesh)
+#   - UDP port 33444 (Mesh/QUIC)
 ```
 
 ### System Dependencies

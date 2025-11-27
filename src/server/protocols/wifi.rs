@@ -23,7 +23,7 @@ use lib_network::protocols::wifi_direct::WiFiDirectMeshProtocol;
 /// WiFi Direct handling with basic group owner detection
 pub struct WiFiRouter {
     connected_devices: Arc<RwLock<HashMap<String, String>>>,
-    node_id: [u8; 32],
+    node_id: lib_storage::types::NodeId,
     protocol: Arc<RwLock<Option<WiFiDirectMeshProtocol>>>,
     initialized: Arc<RwLock<bool>>, // Track if already initialized to prevent re-creating protocol
     peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -37,14 +37,7 @@ impl WiFiRouter {
     pub fn new_with_peer_notification(
         peer_discovery_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>
     ) -> Self {
-        let node_id = {
-            let mut id = [0u8; 32];
-            let uuid = Uuid::new_v4();
-            let uuid_bytes = uuid.as_bytes();
-            id[..16].copy_from_slice(uuid_bytes);
-            id[16..].copy_from_slice(uuid_bytes); // Fill remaining with same UUID
-            id
-        };
+        let node_id = lib_network::node_id::generate_temporary();
         
         Self {
             connected_devices: Arc::new(RwLock::new(HashMap::new())),
@@ -67,10 +60,10 @@ impl WiFiRouter {
         }
         
         info!("🌐 Initializing WiFi Direct P2P + mDNS service discovery...");
-        info!("   Node ID: {:?}", hex::encode(&self.node_id[..8]));
+        info!("   Node ID: {:?}", hex::encode(&self.node_id.as_bytes()[..8]));
         
         // Create WiFi Direct mesh protocol instance with peer discovery notification
-        match WiFiDirectMeshProtocol::new_with_peer_notification(self.node_id, self.peer_discovery_tx.clone()) {
+        match WiFiDirectMeshProtocol::new_with_peer_notification(self.node_id.clone(), self.peer_discovery_tx.clone()) {
             Ok(mut wifi_protocol) => {
                 info!("✅ WiFi Direct protocol created successfully");
                 
@@ -133,7 +126,7 @@ impl WiFiRouter {
         debug!("Checking WiFi Direct group owner status");
         
         // For demonstration, alternate based on node_id to simulate detection
-        let is_owner = (self.node_id[0] % 2) == 0;
+        let is_owner = (self.node_id.as_bytes()[0] % 2) == 0;
         debug!("WiFi Direct group owner status: {} (simulated based on node_id)", is_owner);
         is_owner
     }
@@ -157,7 +150,7 @@ impl WiFiRouter {
             // Send role-aware acknowledgment
             let response = format!(
                 "ZHTP/1.0 200 OK\r\nX-WiFi-Role: {}\r\nX-Node-ID: {:?}\r\n\r\nWiFi Direct connection established as {}",
-                device_role, &self.node_id[..8], device_role
+                device_role, &self.node_id.as_bytes()[..8], device_role
             );
             
             let _ = stream.write_all(response.as_bytes()).await;
@@ -181,7 +174,7 @@ impl WiFiRouter {
 impl Clone for WiFiRouter {
     fn clone(&self) -> Self {
         Self {
-            node_id: self.node_id,
+            node_id: self.node_id.clone(),
             connected_devices: self.connected_devices.clone(),
             protocol: self.protocol.clone(),
             initialized: self.initialized.clone(),

@@ -70,6 +70,7 @@ impl ZhtpServer {
             lib_storage::UnifiedStorageSystem::new(lib_storage::UnifiedStorageConfig {
                 node_id: lib_storage::types::NodeId::from(lib_crypto::Hash::from_bytes(b"node_001")),
                 addresses: vec!["127.0.0.1:8000".to_string()],
+                dht_transport: None,
                 economic_config: lib_storage::EconomicManagerConfig::default(),
                 storage_config: lib_storage::StorageConfig {
                     max_storage_size: 1024 * 1024 * 1024, // 1GB

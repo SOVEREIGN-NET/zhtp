@@ -9,6 +9,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
 use tracing::{info, error, debug};
+use crate::config::storage_defaults::create_test_storage_config as create_default_storage_config;
 
 use super::alerting::{Alert, AlertLevel, AlertManager};
 
@@ -17,29 +18,6 @@ struct StorageStats {
     total_storage: u64,
     used_storage: u64,
     dht_nodes: u32,
-}
-
-/// Helper function to create default storage configuration
-fn create_default_storage_config() -> Result<lib_storage::UnifiedStorageConfig> {
-    use lib_storage::{UnifiedStorageConfig, StorageConfig, ErasureConfig};
-    use lib_storage::StorageTier;
-    use lib_crypto::Hash;
-    
-    Ok(UnifiedStorageConfig {
-        node_id: Hash([1u8; 32]), // Simple node ID wrapped in Hash
-        addresses: vec!["127.0.0.1:8080".to_string()],
-        economic_config: Default::default(), // Use default for EconomicManagerConfig
-        storage_config: StorageConfig {
-            max_storage_size: 1024 * 1024 * 1024, // 1GB
-            default_tier: StorageTier::Hot, // Use available variant
-            enable_compression: true,
-            enable_encryption: true,
-        },
-        erasure_config: ErasureConfig {
-            data_shards: 4,
-            parity_shards: 2,
-        },
-    })
 }
 
 /// Health monitor for ZHTP components
@@ -187,7 +165,7 @@ pub struct MeshHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolHealth {
     pub status: ProtocolStatus,
-    pub connection_count: usize,
+    pub active_connections: usize,
     pub throughput: f64,
     pub error_rate: f64,
     pub signal_strength: Option<f64>,

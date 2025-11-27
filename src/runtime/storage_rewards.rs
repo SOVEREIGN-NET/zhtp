@@ -145,9 +145,10 @@ impl StorageRewardProcessor {
         
         // Get current storage statistics
         let stats = self.network_component.get_storage_stats().await;
+        let tokens_earned = stats.calculate_reward();
         
         info!("    Stats:");
-        info!("      Tokens earned: {} SOV", stats.theoretical_tokens_earned);
+        info!("      Tokens earned: {} SOV", tokens_earned);
         info!("      Items stored: {}", stats.items_stored);
         info!("      Bytes stored: {} bytes ({:.2} MB)", 
               stats.bytes_stored, 
@@ -156,24 +157,22 @@ impl StorageRewardProcessor {
         info!("      Storage duration: {} hours", stats.storage_duration_hours);
         
         // Check if reward meets minimum threshold
-        if stats.theoretical_tokens_earned < self.config.minimum_threshold {
+        if tokens_earned < self.config.minimum_threshold {
             debug!("     Below threshold ({} < {}), skipping claim", 
-                  stats.theoretical_tokens_earned, 
+                  tokens_earned, 
                   self.config.minimum_threshold);
             return Ok(false);
         }
         
         // Cap reward at max batch size
-        let claim_amount = std::cmp::min(
-            stats.theoretical_tokens_earned, 
-            self.config.max_batch_size
-        );
-        
-        if claim_amount < stats.theoretical_tokens_earned {
+        let claim_amount = if tokens_earned > self.config.max_batch_size {
             warn!("     Capping claim: {} -> {} SOV (excess will be claimed next cycle)", 
-                  stats.theoretical_tokens_earned, 
-                  claim_amount);
-        }
+                  tokens_earned, 
+                  self.config.max_batch_size);
+            self.config.max_batch_size
+        } else {
+            tokens_earned
+        };
         
         info!("    Creating storage reward transaction: {} SOV", claim_amount);
         
@@ -211,7 +210,7 @@ impl StorageRewardProcessor {
         info!("    Transaction added to pending pool");
         
         // Reset counter (only reset claimed amount if capped)
-        if claim_amount < stats.theoretical_tokens_earned {
+        if claim_amount < tokens_earned {
             // TODO: Partial reset - need to add this to mesh server
             warn!("     Partial reset not yet implemented - resetting all");
         }
@@ -308,9 +307,10 @@ impl StorageRewardProcessor {
     /// Returns current statistics about pending rewards and processor state.
     pub async fn get_metrics(&self) -> StorageRewardMetrics {
         let stats = self.network_component.get_storage_stats().await;
+        let tokens_earned = stats.calculate_reward();
         
         StorageRewardMetrics {
-            pending_rewards: stats.theoretical_tokens_earned,
+            pending_rewards: tokens_earned,
             total_items_stored: stats.items_stored,
             total_bytes_stored: stats.bytes_stored,
             total_retrievals_served: stats.retrievals_served,

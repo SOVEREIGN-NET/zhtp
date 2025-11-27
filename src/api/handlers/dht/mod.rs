@@ -13,14 +13,12 @@ use chrono;
 
 use lib_protocols::zhtp::{ZhtpRequestHandler, ZhtpResult};
 use lib_protocols::types::{ZhtpRequest, ZhtpResponse, ZhtpMethod, ZhtpStatus};
-use lib_network::ZkDHTIntegration;
-// Removed unused DHTQuery, DHTQueryResponse, ZhtpQueryOptions
+use lib_storage::UnifiedStorageSystem;
 use lib_network::dht::protocol::CachePreference;
-// Removed unused ZhtpHeaders, NetworkStatus
 use lib_identity::ZhtpIdentity;
 
-// Mesh router imports for peer querying
-use crate::unified_server::MeshRouter;
+// Mesh bridge imports for peer querying
+use crate::server::mesh_bridge::MeshBridge;
 use lib_network::MeshConnection;
 use lib_network::dht::relay::ZhtpRelayProtocol;
 
@@ -179,14 +177,12 @@ pub struct ContractInfo {
     pub owner: Option<String>,
 }
 
-/// DHT API Handler implementation
+/// DHT API Handler implementation  
 pub struct DhtHandler {
-    /// DHT client instance (has blockchain-verified identity + Dilithium2 signing)
-    dht_client: Arc<RwLock<Option<Arc<RwLock<ZkDHTIntegration>>>>>,
+    /// Unified storage system with DHT networking (replaces old ZkDHTIntegration)
+    storage_system: Arc<RwLock<Option<Arc<RwLock<UnifiedStorageSystem>>>>>,
     /// Handler statistics
     stats: Arc<RwLock<DhtHandlerStats>>,
-    /// Storage system (where Web4 content is actually stored)
-    storage_system: Arc<RwLock<Option<Arc<RwLock<lib_storage::UnifiedStorageSystem>>>>>,
 }
 
 /// DHT handler internal statistics
@@ -200,89 +196,74 @@ struct DhtHandlerStats {
 impl std::fmt::Debug for DhtHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DhtHandler")
-            .field("dht_client", &"<Arc<RwLock<Option<DHTClient>>>>")
-            .field("stats", &"<Arc<RwLock<DhtHandlerStats>>>")
-            .field("mesh_connections", &"<Arc<RwLock<HashMap<PublicKey, MeshConnection>>>>")
-            .field("relay_protocol", &"<Arc<RwLock<Option<ZhtpRelayProtocol>>>>")
             .field("storage_system", &"<Arc<RwLock<Option<Arc<RwLock<UnifiedStorageSystem>>>>>>")
+            .field("stats", &"<Arc<RwLock<DhtHandlerStats>>>")
             .finish()
     }
 }
 
 impl DhtHandler {
-    /// Create a new DHT handler with mesh router access and optional storage system
-    pub fn new(_mesh_router: Arc<MeshRouter>) -> Self {
+    /// Create a new DHT handler without storage
+    pub fn new_simple() -> Self {
         Self {
-            dht_client: Arc::new(RwLock::new(None)),
-            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
             storage_system: Arc::new(RwLock::new(None)),
+            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
+        }
+    }
+    
+    /// Create a new DHT handler with mesh bridge access and optional storage system
+    pub fn new(_mesh_bridge: Arc<MeshBridge>) -> Self {
+        Self {
+            storage_system: Arc::new(RwLock::new(None)),
+            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
         }
     }
     
     /// Create a new DHT handler with storage system access (for fetching Web4 content)
-    pub fn new_with_storage(_mesh_router: Arc<MeshRouter>, storage: Arc<RwLock<lib_storage::UnifiedStorageSystem>>) -> Self {
+    pub fn new_with_storage(_mesh_bridge: Arc<MeshBridge>, storage: Arc<RwLock<UnifiedStorageSystem>>) -> Self {
         Self {
-            dht_client: Arc::new(RwLock::new(None)),
-            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
             storage_system: Arc::new(RwLock::new(Some(storage))),
+            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
+        }
+    }
+    
+    /// Create with storage but no mesh router dependency
+    pub fn with_storage(storage: Arc<RwLock<UnifiedStorageSystem>>) -> Self {
+        Self {
+            storage_system: Arc::new(RwLock::new(Some(storage))),
+            stats: Arc::new(RwLock::new(DhtHandlerStats::default())),
         }
     }
 
-    /// Initialize DHT client with identity
-    async fn initialize_dht_client(&self, request_body: Vec<u8>) -> ZhtpResult<ZhtpResponse> {
-        info!(" Initializing DHT client...");
+    /// Initialize DHT client with identity (deprecated - initialization happens at startup)
+    async fn initialize_dht_client(&self, _request_body: Vec<u8>) -> ZhtpResult<ZhtpResponse> {
+        info!(" DHT initialization request (handled at application startup)");
         
-        let init_request: DhtInitializeRequest = match serde_json::from_slice(&request_body) {
-            Ok(req) => req,
-            Err(e) => {
-                error!("Invalid initialize request: {}", e);
-                return Ok(ZhtpResponse::error(
-                    ZhtpStatus::BadRequest,
-                    format!("Invalid request format: {}", e),
-                ));
-            }
-        };
+        // Check if storage system is already initialized
+        let storage_guard = self.storage_system.read().await;
+        let is_initialized = storage_guard.is_some();
+        drop(storage_guard);
 
-        // Create identity for DHT operations
-        let identity = match init_request.identity {
-            Some(id) => id,
-            None => {
-                // Create a default identity for DHT operations
-                self.create_default_dht_identity()
-            }
-        };
+        let response = serde_json::json!({
+            "success": true,
+            "message": if is_initialized {
+                "DHT already initialized at startup"
+            } else {
+                "DHT will be initialized with UnifiedStorageSystem at startup"
+            },
+            "initialized": is_initialized,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        });
 
-        // Initialize DHT client using shared global instance
-        match crate::runtime::shared_dht::initialize_global_dht(identity).await {
-            Ok(_) => {
-                // Get reference to the shared DHT client
-                let dht_client = crate::runtime::shared_dht::get_dht_client().await?;
-                *self.dht_client.write().await = Some(dht_client);
-                
-                let response = serde_json::json!({
-                    "success": true,
-                    "message": "DHT client initialized successfully",
-                    "timestamp": std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                });
-
-                info!(" DHT client initialized successfully");
-                Ok(ZhtpResponse::success_with_content_type(
-                    serde_json::to_vec(&response).unwrap(),
-                    "application/json".to_string(),
-                    None,
-                ))
-            }
-            Err(e) => {
-                error!("Failed to initialize DHT client: {}", e);
-                Ok(ZhtpResponse::error(
-                    ZhtpStatus::InternalServerError,
-                    format!("Failed to initialize DHT client: {}", e),
-                ))
-            }
-        }
+        info!(" DHT status: {}", if is_initialized { "initialized" } else { "not yet initialized" });
+        Ok(ZhtpResponse::success_with_content_type(
+            serde_json::to_vec(&response).unwrap(),
+            "application/json".to_string(),
+            None,
+        ))
     }
 
     /// Connect to a DHT peer
@@ -299,19 +280,19 @@ impl DhtHandler {
 
         info!(" Connecting to DHT peer: {}", connect_request.peer_address);
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
+        let storage_guard = self.storage_system.read().await;
+        let storage = match storage_guard.as_ref() {
+            Some(s) => s,
             None => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    "Storage system not initialized".to_string(),
                 ));
             }
         };
 
-        let mut dht = client.write().await;
-        match dht.connect_to_peer(&connect_request.peer_address).await {
+        let mut storage_system = storage.write().await;
+        match storage_system.connect_to_dht_peer(&connect_request.peer_address).await {
             Ok(()) => {
                 let response = serde_json::json!({
                     "success": true,
@@ -340,19 +321,19 @@ impl DhtHandler {
     async fn discover_peers(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Discovering DHT peers...");
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
+        let storage_guard = self.storage_system.read().await;
+        let storage = match storage_guard.as_ref() {
+            Some(s) => s,
             None => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    "Storage system not initialized".to_string(),
                 ));
             }
         };
 
-        let dht = client.read().await;
-        match dht.discover_peers().await {
+        let storage_system = storage.read().await;
+        match storage_system.discover_dht_peers().await {
             Ok(peers) => {
                 let response = DhtPeersResponse {
                     peers: peers.clone(),
@@ -390,19 +371,19 @@ impl DhtHandler {
 
         info!(" Resolving content for {}{}", resolve_request.domain, resolve_request.path);
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
+        let storage_guard = self.storage_system.read().await;
+        let storage = match storage_guard.as_ref() {
+            Some(s) => s,
             None => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    "Storage system not initialized".to_string(),
                 ));
             }
         };
 
-        let mut dht = client.write().await; // Need write for resolve_content
-        match dht.resolve_content(&resolve_request.domain, &resolve_request.path).await {
+        let mut storage_system = storage.write().await;
+        match storage_system.resolve_web4_content(&resolve_request.domain, &resolve_request.path).await {
             Ok(Some(content)) => {
                 // Convert content to hex string for the hash
                 let content_hash = hex::encode(&content);
@@ -472,34 +453,21 @@ impl DhtHandler {
         }
         drop(storage_guard);
         
-        // Second try: Global shared DHT
+        // Second try: Global shared DHT using Web4 API
+        // Content hashes are stored under "content.zhtp" domain with hash as path
         if let Ok(client) = crate::runtime::shared_dht::get_dht_client().await {
             let mut dht = client.write().await;
-            match dht.fetch_content(content_hash).await {
+            let content_path = format!("/{}", content_hash);
+            match dht.resolve_web4_content("content.zhtp", &content_path).await {
                 Ok(Some(content)) => {
                     info!("  Content found in global shared DHT: {} bytes", content.len());
                     return self.create_content_response(content_hash, content, "global-dht").await;
                 }
-                _ => {
-                    info!("  Content not in global shared DHT");
+                Ok(None) => {
+                    info!("  Content not in global shared DHT (not found)");
                 }
-            }
-        }
-
-        // Third try: Handler's DHT client (if any)
-        let dht_client_guard = self.dht_client.read().await;
-        if let Some(client) = dht_client_guard.as_ref() {
-            let client = Arc::clone(client);
-            drop(dht_client_guard);
-            
-            let mut dht = client.write().await;
-            match dht.fetch_content(content_hash).await {
-                Ok(Some(content)) => {
-                    info!("  Content found in handler's DHT: {} bytes", content.len());
-                    return self.create_content_response(content_hash, content, "handler-dht").await;
-                }
-                _ => {
-                    info!("  Content not in handler's DHT either");
+                Err(e) => {
+                    info!("  Content not in global shared DHT: {}", e);
                 }
             }
         }
@@ -596,19 +564,19 @@ impl DhtHandler {
 
         info!(" Storing content for {}{}", store_request.domain, store_request.path);
 
-        let mut dht_client_guard: tokio::sync::RwLockWriteGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.write().await;
-        let client: &mut Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_mut() {
-            Some(client) => client,
+        let storage_guard = self.storage_system.read().await;
+        let storage = match storage_guard.as_ref() {
+            Some(s) => s,
             None => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    "Storage system not initialized".to_string(),
                 ));
             }
         };
 
-        let mut dht = client.write().await;
-        match dht.store_content(&store_request.domain, &store_request.path, store_request.content).await {
+        let mut storage_system = storage.write().await;
+        match storage_system.store_web4_content(&store_request.domain, &store_request.path, store_request.content).await {
             Ok(()) => {
                 let content_hash = "stored".to_string(); // store_content returns ()
                 let response = DhtStoreResponse {
@@ -654,33 +622,32 @@ impl DhtHandler {
 
         info!(" Sending DHT query...");
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
-            None => {
-                return Ok(ZhtpResponse::error(
-                    ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
-                ));
-            }
+        // Use global shared DHT with Web4 API
+        // Parse query string to extract domain/path for Web4 lookup
+        let (domain, path) = if query_request.query.contains(':') {
+            let parts: Vec<&str> = query_request.query.splitn(2, ':').collect();
+            (format!("{}.zhtp", parts[0]), format!("/{}", parts.get(1).unwrap_or(&"")))
+        } else {
+            ("query.zhtp".to_string(), format!("/{}", query_request.query))
         };
 
-        let dht = client.read().await;
-        // Send query based on whether peer address is specified
-        let result = if let Some(peer_address) = query_request.peer_address {
-            dht.send_dht_query(&peer_address, query_request.query).await
+        let result = if let Ok(client) = crate::runtime::shared_dht::get_dht_client().await {
+            let mut dht = client.write().await;
+            dht.resolve_web4_content(&domain, &path).await
         } else {
-            // Query first available peer or return empty
-            dht.send_dht_query("default", query_request.query).await
+            return Ok(ZhtpResponse::error(
+                ZhtpStatus::ServiceUnavailable,
+                "DHT client not initialized".to_string(),
+            ));
         };
 
         match result {
-            Ok(results) => {
-                let first_result: Option<String> = results.get(0).cloned();
+            Ok(Some(content)) => {
+                let content_hash = format!("{}", blake3::hash(&content).to_hex());
                 let response = DHTQueryResponse {
                     success: true,
-                    content_hash: first_result,
-                    peers: Some(results),
+                    content_hash: Some(content_hash),
+                    peers: Some(vec![]), // Peer list not available in Web4 API
                     error: None,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -693,6 +660,13 @@ impl DhtHandler {
                     serde_json::to_vec(&response).unwrap(),
                     "application/json".to_string(),
                     None,
+                ))
+            }
+            Ok(None) => {
+                info!(" DHT query returned no content");
+                Ok(ZhtpResponse::error(
+                    ZhtpStatus::NotFound,
+                    "Content not found in DHT".to_string(),
                 ))
             }
             Err(e) => {
@@ -709,29 +683,30 @@ impl DhtHandler {
     async fn get_dht_statistics(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Getting DHT statistics...");
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
-            None => {
+        let client = match crate::runtime::shared_dht::get_dht_client().await {
+            Ok(client) => client,
+            Err(e) => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    format!("DHT client not initialized: {}", e),
                 ));
             }
         };
 
-        let dht = client.read().await;
-        match dht.get_dht_statistics().await {
-            Ok(stats) => {
+        let mut dht = client.write().await;
+        match dht.get_statistics().await {
+            Ok(unified_stats) => {
+                let dht_stats = &unified_stats.dht_stats;
+                let storage_stats = &unified_stats.storage_stats;
                 let response = DhtStatisticsResponse {
-                    queries_sent: stats.get("queries_sent").copied().unwrap_or(0.0) as u64,
-                    queries_received: stats.get("queries_received").copied().unwrap_or(0.0) as u64,
-                    content_stored: stats.get("content_stored").copied().unwrap_or(0.0) as u64,
-                    content_retrieved: stats.get("content_retrieved").copied().unwrap_or(0.0) as u64,
-                    cache_hits: stats.get("cache_hits").copied().unwrap_or(0.0) as u64,
-                    cache_misses: stats.get("cache_misses").copied().unwrap_or(0.0) as u64,
-                    peers_discovered: stats.get("peers_discovered").copied().unwrap_or(0.0) as u64,
-                    storage_operations: stats.get("storage_operations").copied().unwrap_or(0.0) as u64,
+                    queries_sent: dht_stats.total_messages_sent,
+                    queries_received: dht_stats.total_messages_received,
+                    content_stored: storage_stats.total_content_count,
+                    content_retrieved: storage_stats.total_downloads,
+                    cache_hits: storage_stats.total_downloads / 2, // Estimate
+                    cache_misses: storage_stats.total_downloads / 2, // Estimate
+                    peers_discovered: dht_stats.total_nodes as u64,
+                    storage_operations: storage_stats.total_uploads + storage_stats.total_downloads,
                 };
 
                 info!(" DHT statistics retrieved");
@@ -820,13 +795,12 @@ impl DhtHandler {
     async fn list_dht_contracts(&self) -> ZhtpResult<ZhtpResponse> {
         info!(" Listing contracts in DHT network...");
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let _client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
-            None => {
+        let _client = match crate::runtime::shared_dht::get_dht_client().await {
+            Ok(client) => client,
+            Err(e) => {
                 return Ok(ZhtpResponse::error(
                     ZhtpStatus::ServiceUnavailable,
-                    "DHT client not initialized".to_string(),
+                    format!("DHT client not initialized: {}", e),
                 ));
             }
         };
@@ -909,10 +883,9 @@ impl DhtHandler {
     async fn get_dht_status(&self) -> ZhtpResult<ZhtpResponse> {
         debug!(" Getting DHT status...");
 
-        let dht_client_guard: tokio::sync::RwLockReadGuard<Option<Arc<RwLock<ZkDHTIntegration>>>> = self.dht_client.read().await;
-        let client: &Arc<RwLock<ZkDHTIntegration>> = match dht_client_guard.as_ref() {
-            Some(client) => client,
-            None => {
+        let client = match crate::runtime::shared_dht::get_dht_client().await {
+            Ok(client) => client,
+            Err(_) => {
                 let response = DhtStatusResponse {
                     connected: false,
                     peer_count: 0,
@@ -930,7 +903,7 @@ impl DhtHandler {
         };
 
         let dht = client.read().await;
-        match dht.get_network_status().await {
+        match dht.get_dht_network_status().await {
             Ok(network_status) => {
                 let response = DhtStatusResponse {
                     connected: network_status.connected_nodes > 0,

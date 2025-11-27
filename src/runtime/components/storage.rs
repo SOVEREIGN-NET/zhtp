@@ -8,11 +8,19 @@ use tracing::{info, warn, debug};
 use crate::runtime::{Component, ComponentId, ComponentStatus, ComponentHealth, ComponentMessage};
 
 /// Storage component implementation using lib-storage package
-#[derive(Debug)]
 pub struct StorageComponent {
     status: Arc<RwLock<ComponentStatus>>,
     start_time: Arc<RwLock<Option<Instant>>>,
     storage_system: Arc<RwLock<Option<lib_storage::UnifiedStorageSystem>>>,
+}
+
+impl std::fmt::Debug for StorageComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageComponent")
+            .field("status", &"<ComponentStatus>")
+            .field("storage_system", &"<UnifiedStorageSystem>")
+            .finish()
+    }
 }
 
 impl StorageComponent {

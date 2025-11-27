@@ -41,15 +41,14 @@ fn validate_port_assignments(config: &NodeConfig) -> Result<()> {
     let mut used_ports = HashMap::new();
     let mut conflicts = Vec::new();
     
-    // Special handling for unified server: mesh and API can share port 9333
-    let unified_server_port = 9333;
-    let is_unified_mode = config.network_config.mesh_port == unified_server_port 
-                       && config.protocols_config.api_port == unified_server_port;
+    // Special handling for unified server: mesh and API can share port 9333 (legacy) or 9334 (QUIC)
+    let is_unified_mode = config.network_config.mesh_port == config.protocols_config.api_port;
     
     if is_unified_mode {
+        let unified_port = config.network_config.mesh_port;
         // In unified mode, mesh and API intentionally share the same port
-        used_ports.insert(unified_server_port, "unified-server".to_string());
-        info!("Using unified server mode - mesh and API protocols share port {}", unified_server_port);
+        used_ports.insert(unified_port, "unified-server".to_string());
+        info!("Using unified server mode - mesh and API protocols share port {}", unified_port);
     } else {
         // Check mesh port
         if let Some(existing) = used_ports.insert(config.network_config.mesh_port, "mesh".to_string()) {
@@ -62,10 +61,7 @@ fn validate_port_assignments(config: &NodeConfig) -> Result<()> {
         }
     }
     
-    // Check DHT port (always separate)
-    if let Some(existing) = used_ports.insert(config.storage_config.dht_port, "storage-dht".to_string()) {
-        conflicts.push((config.storage_config.dht_port, vec!["storage-dht".to_string(), existing]));
-    }
+    // DHT port removed - DHT now uses QUIC mesh transport (no separate port needed)
     
     // Check for standard port conflicts
     let standard_ports = [22, 53, 80, 443, 8080, 3000, 5432, 27017];

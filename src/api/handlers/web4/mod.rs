@@ -36,12 +36,13 @@ impl Web4Handler {
         identity_manager: Arc<RwLock<lib_identity::IdentityManager>>,
         blockchain: Arc<RwLock<lib_blockchain::Blockchain>>,
     ) -> ZhtpResult<Self> {
-        info!("Initializing Web4 API handler with existing storage system");
+        info!("Initializing Web4 API handler with blockchain query support");
         
-        let web4_manager = lib_network::initialize_web4_system_with_storage(storage).await
+        // Initialize Web4 system WITH blockchain for domain queries
+        let web4_manager = lib_network::initialize_web4_system_with_blockchain(storage, blockchain.clone()).await
             .map_err(|e| anyhow::anyhow!("Failed to initialize Web4 system: {}", e))?;
         
-        info!(" Web4 API handler initialized successfully");
+        info!(" Web4 API handler initialized with blockchain domain query support");
         
         // Initialize wallet-content manager for ownership tracking
         let wallet_content_manager = lib_storage::WalletContentManager::new();
